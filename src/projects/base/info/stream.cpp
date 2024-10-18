@@ -45,6 +45,7 @@ namespace info
 		_source_type = stream._source_type;
 		_source_url = stream._source_url;
 		_created_time = stream._created_time;
+		_published_time = stream._published_time;
 		_app_info = stream._app_info;
 		_origin_stream = stream._origin_stream;
 
@@ -92,7 +93,7 @@ namespace info
 	ov::String Stream::GetUri()
 	{
 		// #vhost name#appname/stream name
-		ov::String vhost_app_name = _app_info != nullptr ? _app_info->GetName().CStr() : "Unknown";
+		ov::String vhost_app_name = _app_info != nullptr ? _app_info->GetVHostAppName().CStr() : "Unknown";
 		return ov::String::FormatString("%s/%s", vhost_app_name.CStr(), GetName().CStr());
 	}
 
@@ -181,6 +182,26 @@ namespace info
 		return _created_time;
 	}
 
+	void Stream::SetPublishedTimeNow()
+	{
+		_published_time = std::chrono::system_clock::now();
+	}
+
+	const std::chrono::system_clock::time_point &Stream::GetPublishedTime() const
+	{
+		return _published_time;
+	}
+
+	const std::chrono::system_clock::time_point &Stream::GetInputStreamPublishedTime() const
+	{
+		if (GetLinkedInputStream() != nullptr)
+		{
+			return GetLinkedInputStream()->GetPublishedTime();
+		}
+
+		return GetPublishedTime();
+	}
+
 	uint32_t Stream::GetUptimeSec()
 	{
 		auto current = std::chrono::high_resolution_clock::now();
@@ -202,22 +223,10 @@ namespace info
 		_representation_type = type;
 	}
 
-	int32_t Stream::IssueUniqueTrackId()
+	uint32_t Stream::IssueUniqueTrackId()
 	{
-		int32_t track_id = ov::Random::GenerateInt32(100, 0x7FFFFFFF);
-
-		while (true)
-		{
-			auto item = _tracks.find(track_id);
-			if (item == _tracks.end())
-			{
-				break;
-			}
-
-			track_id = ov::Random::GenerateInt32(100, 0x7FFFFFFF);
-		}
-
-		return track_id;
+		static std::atomic<uint32_t> last_issued_track_id(1);
+		return last_issued_track_id++;
 	}
 
 	bool Stream::AddTrack(const std::shared_ptr<MediaTrack> &track)
@@ -411,8 +420,8 @@ namespace info
 
 	bool Stream::AddPlaylist(const std::shared_ptr<Playlist> &playlist)
 	{
-		_playlists.emplace(playlist->GetFileName(), playlist);
-		return true;
+		auto result = _playlists.emplace(playlist->GetFileName(), playlist);
+		return result.second;
 	}
 
 	std::shared_ptr<const Playlist> Stream::GetPlaylist(const ov::String &file_name) const
@@ -438,7 +447,7 @@ namespace info
 			return "Unknown";
 		}
 
-		return _app_info->GetName().CStr();
+		return _app_info->GetVHostAppName().CStr();
 	}
 
 	ov::String Stream::GetInfoString()

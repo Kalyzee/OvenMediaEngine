@@ -1,7 +1,53 @@
 #include "h264_parser.h"
+
 #include "h264_decoder_configuration_record.h"
 
 #define OV_LOG_TAG "H264Parser"
+
+std::vector<NaluIndex> H264Parser::FindNaluIndexes(const uint8_t *bitstream, size_t length)
+{
+	std::vector<NaluIndex> indexes;
+
+	size_t offset = 0;
+	while (offset < length)
+	{
+		size_t start_code_size = 0;
+		auto pos = FindAnnexBStartCode(bitstream + offset, length - offset, start_code_size);
+		offset += pos;
+
+		// get previous index
+		if (indexes.size() > 0)
+		{
+			auto& prev_index = indexes.back();
+
+			// last NALU
+			if (pos == -1)
+			{
+				prev_index._payload_size = length - prev_index._payload_offset;
+				break;
+			}
+
+			prev_index._payload_size = offset - prev_index._payload_offset;
+		}
+		else if (pos == -1)
+		{
+			// error
+			break;
+		}
+		
+		// new NALU
+		NaluIndex index;
+		index._start_offset = offset;
+		index._payload_offset = offset + start_code_size;
+		index._payload_size = 0;
+
+		indexes.push_back(index);
+
+		offset += start_code_size;
+	}
+
+	return indexes;
+}
 
 int H264Parser::FindAnnexBStartCode(const uint8_t *bitstream, size_t length, size_t &start_code_size)
 {
@@ -13,7 +59,13 @@ int H264Parser::FindAnnexBStartCode(const uint8_t *bitstream, size_t length, siz
 		size_t remaining = length - offset;
 		const uint8_t *data = bitstream + offset;
 
-		if ((remaining >= 3 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01) ||
+		// fast forward to the next start code
+		// if the 3rd byte isn't 1 or 0, we can skip 3 bytes
+		if (remaining >= 3 && data[2] > 0x01)
+		{
+			offset += 3;
+		}
+		else if ((remaining >= 3 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01) ||
 			(remaining >= 4 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x01))
 		{
 			if (data[2] == 0x01)
@@ -161,7 +213,7 @@ bool H264Parser::ParseSPS(const uint8_t *nalu, size_t length, H264SPS &sps)
 	}
 
 	if (sps._profile == 44 || sps._profile == 83 || sps._profile == 86 || sps._profile == 100 ||
-		sps._profile == 110 || sps._profile == 118 || sps._profile == 122 || sps._profile == 244)
+		sps._profile == 110 || sps._profile == 118 || sps._profile == 122 || sps._profile == 244 || sps._profile == 128)
 	{
 		if (!parser.ReadUEV(sps._chroma_format_idc))
 		{
@@ -242,6 +294,10 @@ bool H264Parser::ParseSPS(const uint8_t *nalu, size_t length, H264SPS &sps)
 			}
 		}
 	}
+	else
+	{
+		sps._chroma_format_idc = 1;
+	}
 
 	if (!parser.ReadUEV(sps._log2_max_frame_num_minus4))
 	{
@@ -320,7 +376,6 @@ bool H264Parser::ParseSPS(const uint8_t *nalu, size_t length, H264SPS &sps)
 			return false;
 		}
 
-		
 		if (!parser.ReadBit(sps._frame_mbs_only_flag))
 		{
 			return false;
@@ -375,11 +430,11 @@ bool H264Parser::ParseSPS(const uint8_t *nalu, size_t length, H264SPS &sps)
 		sps._height = ((2 - sps._frame_mbs_only_flag) * (pic_height_in_map_units_minus1 + 1) * 16) - 2 * crop_top - 2 * crop_bottom;
 	}
 
-	// [ VUI ] 
-	// VUI(Video Usability Information) is extended information of video. Since it is not a required part in ISO/IEC, 
+	// [ VUI ]
+	// VUI(Video Usability Information) is extended information of video. Since it is not a required part in ISO/IEC,
 	// it is not an error even if the parsing fails.
-	
-	if(!ParseVUI(parser, sps))
+
+	if (!ParseVUI(parser, sps))
 	{
 		logtw("Could not parsed VUI parameters of SPS");
 	}
@@ -584,7 +639,7 @@ bool H264Parser::ParsePPS(const uint8_t *nalu, size_t length, H264PPS &pps)
 	}
 
 	// entropy_coding_mode_flag
-	
+
 	if (!parser.ReadBit(pps._entropy_coding_mode_flag))
 	{
 		return false;
@@ -596,7 +651,7 @@ bool H264Parser::ParsePPS(const uint8_t *nalu, size_t length, H264PPS &pps)
 	}
 
 	// num_slice_groups_minus1
-	
+
 	if (!parser.ReadUEV(pps._num_slice_groups_minus1))
 	{
 		return false;
@@ -604,7 +659,7 @@ bool H264Parser::ParsePPS(const uint8_t *nalu, size_t length, H264PPS &pps)
 
 	if (pps._num_slice_groups_minus1 > 1)
 	{
-		// not support 
+		// not support
 		return false;
 	}
 
@@ -613,7 +668,6 @@ bool H264Parser::ParsePPS(const uint8_t *nalu, size_t length, H264PPS &pps)
 		return false;
 	}
 
-	
 	if (!parser.ReadUEV(pps._num_ref_idx_l1_default_active_minus1))
 	{
 		return false;
@@ -647,7 +701,6 @@ bool H264Parser::ParsePPS(const uint8_t *nalu, size_t length, H264PPS &pps)
 		return false;
 	}
 
-	
 	if (!parser.ReadBit(pps._deblocking_filter_control_present_flag))
 	{
 		return false;
@@ -669,7 +722,6 @@ bool H264Parser::ParsePPS(const uint8_t *nalu, size_t length, H264PPS &pps)
 	return true;
 }
 
-// 
 bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceHeader &shd, std::shared_ptr<AVCDecoderConfigurationRecord> &avcc)
 {
 	NalUnitBitstreamParser parser(nalu, length);
@@ -691,7 +743,6 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 		return false;
 	}
 
-	
 	if (!parser.ReadUEV(shd._slice_type))
 	{
 		return false;
@@ -719,13 +770,24 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 		return false;
 	}
 
-	uint32_t frame_num;
+	// TODO ?? interlaced source is not supported
+	// separate_colour_plane_flag ??
+	// if (sps._separate_colour_plane_flag)
+	// {
+	// 	uint8_t colour_plane_id;
+	// 	if (!parser.ReadBits(2, colour_plane_id))
+	// 	{
+	// 		return false;
+	// 	}
+	// }
+
+	uint32_t frame_num = 0;
 	if (!parser.ReadBits(sps._log2_max_frame_num_minus4 + 4, frame_num))
 	{
 		return false;
 	}
 
-	bool field_pic_flag;
+	bool field_pic_flag = false;
 	if (sps._frame_mbs_only_flag == 0)
 	{
 		if (!parser.ReadBit(field_pic_flag))
@@ -805,7 +867,7 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 		}
 	}
 
-	if (shd.GetSliceType() == H264SliceHeader::SliceType::PSlice || 
+	if (shd.GetSliceType() == H264SliceHeader::SliceType::PSlice ||
 		shd.GetSliceType() == H264SliceHeader::SliceType::BSlice ||
 		shd.GetSliceType() == H264SliceHeader::SliceType::SPSlice)
 	{
@@ -833,7 +895,7 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 		else
 		{
 			shd._num_ref_idx_l0_active_minus1 = pps._num_ref_idx_l0_default_active_minus1;
-			
+
 			if (shd.GetSliceType() == H264SliceHeader::SliceType::BSlice)
 			{
 				shd._num_ref_idx_l1_active_minus1 = pps._num_ref_idx_l1_default_active_minus1;
@@ -846,7 +908,7 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 		return false;
 	}
 
-	if ((pps._weighted_pred_flag &&  (shd.GetSliceType() == H264SliceHeader::SliceType::PSlice || shd.GetSliceType() == H264SliceHeader::SliceType::SPSlice)) ||
+	if ((pps._weighted_pred_flag && (shd.GetSliceType() == H264SliceHeader::SliceType::PSlice || shd.GetSliceType() == H264SliceHeader::SliceType::SPSlice)) ||
 
 		(pps._weighted_bipred_idc == 1 && shd.GetSliceType() == H264SliceHeader::SliceType::BSlice))
 	{
@@ -858,7 +920,7 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 
 	if (nal_header._nal_ref_idc != 0)
 	{
-		ParseDecRefPicMarking(parser, nal_header.GetNalUnitType() == H264NalUnitType::IdrSlice, shd); 
+		ParseDecRefPicMarking(parser, nal_header.GetNalUnitType() == H264NalUnitType::IdrSlice, shd);
 	}
 
 	if (pps._entropy_coding_mode_flag && shd.GetSliceType() != H264SliceHeader::SliceType::ISlice && shd.GetSliceType() != H264SliceHeader::SliceType::SISlice)
@@ -925,7 +987,7 @@ bool H264Parser::ParseSliceHeader(const uint8_t *nalu, size_t length, H264SliceH
 	}
 
 	shd._header_size_in_bits = parser.BitsConsumed() - (H264_NAL_UNIT_HEADER_SIZE * 8);
-		
+
 	return true;
 }
 
@@ -1014,7 +1076,10 @@ bool H264Parser::ParseRefPicListReordering(NalUnitBitstreamParser &parser, H264S
 bool H264Parser::ParsePredWeightTable(NalUnitBitstreamParser &parser, const H264SPS &sps, H264SliceHeader &header)
 {
 	uint32_t luma_log2_weight_denom;
-	parser.ReadUEV(luma_log2_weight_denom);
+	if (!parser.ReadUEV(luma_log2_weight_denom))
+	{
+		return false;
+	}
 
 	if (sps._chroma_format_idc != 0)
 	{
@@ -1110,7 +1175,7 @@ bool H264Parser::ParseDecRefPicMarking(NalUnitBitstreamParser &parser, bool idr,
 			return false;
 		}
 	}
-	else 
+	else
 	{
 		uint8_t adaptive_ref_pic_marking_mode_flag;
 		if (!parser.ReadBit(adaptive_ref_pic_marking_mode_flag))

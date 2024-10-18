@@ -47,20 +47,22 @@ MediaRouteApplication::MediaRouteApplication(const info::Application &applicatio
 	: _application_info(application_info)
 {
 	_max_worker_thread_count = std::min(std::max((uint32_t)_application_info.GetConfig().GetPublishers().GetAppWorkerCount(), (uint32_t)MIN_APPLICATION_WORKER_COUNT), (uint32_t)MAX_APPLICATION_WORKER_COUNT);
+	int delay_buffer_time_ms = _application_info.GetConfig().GetPublishers().GetDelayBufferTimeMs();
 
-	logti("[%s(%u)] Created Mediarouter application. worker(%d)", _application_info.GetName().CStr(), _application_info.GetId(), _max_worker_thread_count);
+	logti("[%s(%u)] Created Mediarouter application. Worker(%d) DelayBufferTime(%d)", _application_info.GetVHostAppName().CStr(), _application_info.GetId(), _max_worker_thread_count, delay_buffer_time_ms);
 
 	for (uint32_t worker_id = 0; worker_id < _max_worker_thread_count; worker_id++)
 	{
 		{
-			auto urn = std::make_shared<info::ManagedQueue::URN>(_application_info.GetName(), nullptr, "imr", ov::String::FormatString("aw_%d", worker_id));
-			auto stream_data = std::make_shared<ov::ManagedQueue<std::shared_ptr<MediaRouteStream>>>(urn, 500);
+			auto urn = std::make_shared<info::ManagedQueue::URN>(_application_info.GetVHostAppName(), nullptr, "imr", ov::String::FormatString("aw_%d", worker_id));
+			auto stream_data = std::make_shared<ov::ManagedQueue<std::shared_ptr<MediaRouteStream>>>(urn, 1000);
 			_inbound_stream_indicator.push_back(stream_data);
 		}
 
 		{
-			auto urn = std::make_shared<info::ManagedQueue::URN>(_application_info.GetName(), nullptr, "omr", ov::String::FormatString("aw_%d", worker_id));
-			auto stream_data = std::make_shared<ov::ManagedQueue<std::shared_ptr<MediaRouteStream>>>(urn, 500);
+			auto urn = std::make_shared<info::ManagedQueue::URN>(_application_info.GetVHostAppName(), nullptr, "omr", ov::String::FormatString("aw_%d", worker_id));
+			auto stream_data = std::make_shared<ov::ManagedQueue<std::shared_ptr<MediaRouteStream>>>(urn, 1000);
+			stream_data->SetBufferingDelay(delay_buffer_time_ms);
 			_outbound_stream_indicator.push_back(stream_data);
 		}
 	}
@@ -68,7 +70,7 @@ MediaRouteApplication::MediaRouteApplication(const info::Application &applicatio
 
 MediaRouteApplication::~MediaRouteApplication()
 {
-	logti("[%s(%u)] Destroyed Mediarouter application. worker(%d)", _application_info.GetName().CStr(), _application_info.GetId(), _max_worker_thread_count);
+	logti("[%s(%u)] Destroyed Mediarouter application. worker(%d)", _application_info.GetVHostAppName().CStr(), _application_info.GetId(), _max_worker_thread_count);
 }
 
 bool MediaRouteApplication::Start()
@@ -107,7 +109,7 @@ bool MediaRouteApplication::Start()
 		}
 	}
 
-	logtd("[%s(%u)] Started Mediarouter application.", _application_info.GetName().CStr(), _application_info.GetId());
+	logtd("[%s(%u)] Started Mediarouter application.", _application_info.GetVHostAppName().CStr(), _application_info.GetId());
 
 
 	return true;
@@ -153,7 +155,7 @@ bool MediaRouteApplication::Stop()
 	_connectors.clear();
 	_observers.clear();
 
-	logtd("[%s(%u)] Mediarouter application has been stopped", _application_info.GetName().CStr(), _application_info.GetId());
+	logtd("[%s(%u)] Mediarouter application has been stopped", _application_info.GetVHostAppName().CStr(), _application_info.GetId());
 
 	return true;
 }
@@ -177,7 +179,7 @@ bool MediaRouteApplication::RegisterConnectorApp(std::shared_ptr<MediaRouterAppl
 
 	_connectors.push_back(connector);
 
-	logtd("Registered connector. app(%s) type(%d)", _application_info.GetName().CStr(), connector->GetConnectorType());
+	logtd("Registered connector. app(%s) type(%d)", _application_info.GetVHostAppName().CStr(), connector->GetConnectorType());
 
 	return true;
 }
@@ -200,7 +202,7 @@ bool MediaRouteApplication::UnregisterConnectorApp(std::shared_ptr<MediaRouterAp
 
 	_connectors.erase(position);
 
-	logti("Unregistered connector. app(%s) type(%d)", _application_info.GetName().CStr(), connector->GetConnectorType());
+	logti("Unregistered connector. app(%s) type(%d)", _application_info.GetVHostAppName().CStr(), connector->GetConnectorType());
 
 	return true;
 }
@@ -216,7 +218,7 @@ bool MediaRouteApplication::RegisterObserverApp(std::shared_ptr<MediaRouterAppli
 
 	_observers.push_back(observer);
 
-	logtd("Registered observer. app(%s) type(%d)", _application_info.GetName().CStr(), observer->GetObserverType());
+	logtd("Registered observer. app(%s) type(%d)", _application_info.GetVHostAppName().CStr(), observer->GetObserverType());
 
 	return true;
 }
@@ -238,7 +240,7 @@ bool MediaRouteApplication::UnregisterObserverApp(std::shared_ptr<MediaRouterApp
 
 	_observers.erase(position);
 
-	logti("Unregistered observer. app(%s) type(%d)", _application_info.GetName().CStr(), observer->GetObserverType());
+	logti("Unregistered observer. app(%s) type(%d)", _application_info.GetVHostAppName().CStr(), observer->GetObserverType());
 
 	return true;
 }
@@ -263,7 +265,7 @@ CommonErrorCode MediaRouteApplication::MirrorStream(std::shared_ptr<MediaRouterS
 
 	if (!stream_info)
 	{
-		logtw("Failed to mirror stream. %s/%s is not found", _application_info.GetName().CStr(), stream_name.CStr());
+		logtw("Failed to mirror stream. %s/%s is not found", _application_info.GetVHostAppName().CStr(), stream_name.CStr());
 		return CommonErrorCode::NOT_FOUND;
 	}
 
@@ -337,7 +339,7 @@ bool MediaRouteApplication::OnStreamCreated(const std::shared_ptr<MediaRouterApp
 		return false;
 	}
 
-	logti("[%s/%s(%u)] Trying to create a stream", _application_info.GetName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
+	logti("[%s/%s(%u)] Trying to create a stream", _application_info.GetVHostAppName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
 
 	auto connector_type = app_conn->GetConnectorType();
 	auto representation_type = stream_info->GetRepresentationType();
@@ -409,7 +411,9 @@ std::shared_ptr<MediaRouteStream> MediaRouteApplication::CreateInboundStream(con
 
 	auto new_stream = std::make_shared<MediaRouteStream>(stream_info, MediaRouterStreamType::INBOUND);
 	if (!new_stream)
+	{
 		return nullptr;
+	}
 
 	_inbound_streams.insert(std::make_pair(stream_info->GetId(), new_stream));
 
@@ -425,7 +429,7 @@ std::shared_ptr<MediaRouteStream> MediaRouteApplication::CreateOutboundStream(co
 	{
 		return nullptr;
 	}
-
+	
 	_outbound_streams.insert(std::make_pair(stream_info->GetId(), new_stream));
 
 	return new_stream;
@@ -435,7 +439,7 @@ bool MediaRouteApplication::NotifyStreamCreate(const std::shared_ptr<info::Strea
 {
 	std::shared_lock<std::shared_mutex> lock(_observers_lock);
 
-	logti("[%s/%s(%u)] Stream has been created", _application_info.GetName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
+	logti("[%s/%s(%u)] Stream has been created", _application_info.GetVHostAppName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
 
 	auto representation_type = stream_info->GetRepresentationType();
 
@@ -471,10 +475,12 @@ bool MediaRouteApplication::NotifyStreamCreate(const std::shared_ptr<info::Strea
 bool MediaRouteApplication::NotifyStreamPrepared(std::shared_ptr<MediaRouteStream> &stream)
 {
 	std::shared_lock<std::shared_mutex> lock(_observers_lock);
+	auto observers = _observers; // Avoid deadlock
+	lock.unlock();
 
-	logti("[%s/%s(%u)] Stream has been prepared %s", _application_info.GetName().CStr(), stream->GetStream()->GetName().CStr(), stream->GetStream()->GetId(), stream->GetStream()->GetInfoString().CStr());
+	logti("[%s/%s(%u)] Stream has been prepared %s", _application_info.GetVHostAppName().CStr(), stream->GetStream()->GetName().CStr(), stream->GetStream()->GetId(), stream->GetStream()->GetInfoString().CStr());
 
-	for (auto observer : _observers)
+	for (auto observer : observers)
 	{
 		auto observer_type = observer->GetObserverType();
 
@@ -515,7 +521,7 @@ bool MediaRouteApplication::NotifyStreamPrepared(std::shared_ptr<MediaRouteStrea
 
 bool MediaRouteApplication::OnStreamUpdated(const std::shared_ptr<MediaRouterApplicationConnector> &app_conn, const std::shared_ptr<info::Stream> &stream_info)
 {
-	logti(" [%s/%s(%u)] Trying to update a stream", _application_info.GetName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
+	logti(" [%s/%s(%u)] Trying to update a stream", _application_info.GetVHostAppName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
 
 	if (!app_conn || !stream_info)
 	{
@@ -564,7 +570,7 @@ bool MediaRouteApplication::OnStreamUpdated(const std::shared_ptr<MediaRouterApp
 
 bool MediaRouteApplication::OnStreamDeleted(const std::shared_ptr<MediaRouterApplicationConnector> &app_conn, const std::shared_ptr<info::Stream> &stream_info)
 {
-	logti("[%s/%s(%u)] Trying to delete a stream", _application_info.GetName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
+	logti("[%s/%s(%u)] Trying to delete a stream", _application_info.GetVHostAppName().CStr(), stream_info->GetName().CStr(), stream_info->GetId());
 
 	if (!app_conn || !stream_info)
 	{
@@ -624,10 +630,12 @@ bool MediaRouteApplication::DeleteOutboundStream(const std::shared_ptr<info::Str
 bool MediaRouteApplication::NotifyStreamDeleted(const std::shared_ptr<info::Stream> &stream_info, const MediaRouterApplicationConnector::ConnectorType connector_type)
 {
 	std::shared_lock<std::shared_mutex> lock_guard(_observers_lock);
+	auto observers = _observers; // Avoid deadlock
+	lock_guard.unlock();
 
 	auto representation_type = stream_info->GetRepresentationType();
 
-	for (auto it = _observers.begin(); it != _observers.end(); ++it)
+	for (auto it = observers.begin(); it != observers.end(); ++it)
 	{
 		auto observer = *it;
 
@@ -668,10 +676,12 @@ bool MediaRouteApplication::NotifyStreamDeleted(const std::shared_ptr<info::Stre
 bool MediaRouteApplication::NotifyStreamUpdated(const std::shared_ptr<info::Stream> &stream_info, const MediaRouterApplicationConnector::ConnectorType connector_type)
 {
 	std::shared_lock<std::shared_mutex> lock_guard(_observers_lock);
+	auto observers = _observers; // Avoid deadlock
+	lock_guard.unlock();
 
 	auto representation_type = stream_info->GetRepresentationType();
 
-	for (auto it = _observers.begin(); it != _observers.end(); ++it)
+	for (auto it = observers.begin(); it != observers.end(); ++it)
 	{
 		auto observer = *it;
 
@@ -732,7 +742,7 @@ bool MediaRouteApplication::OnPacketReceived(const std::shared_ptr<MediaRouterAp
 
 		stream->Push(packet);
 
-		_inbound_stream_indicator[GetWorkerIDByStreamID(stream_info->GetId())]->Enqueue(stream);
+		_inbound_stream_indicator[GetWorkerIDByStreamID(stream_info->GetId())]->Enqueue(stream, packet->IsHighPriority());
 	}
 	// Provider(relay), Transcoder => Outbound Stream
 	else if ((IS_CONNECTOR_PROVIDER(connector_type) && IS_REPRENT_RELAY(representation_type)) ||
@@ -746,7 +756,7 @@ bool MediaRouteApplication::OnPacketReceived(const std::shared_ptr<MediaRouterAp
 
 		stream->Push(packet);
 
-		_outbound_stream_indicator[GetWorkerIDByStreamID(stream_info->GetId())]->Enqueue(stream);
+		_outbound_stream_indicator[GetWorkerIDByStreamID(stream_info->GetId())]->Enqueue(stream, packet->IsHighPriority());
 	}
 	else
 	{
@@ -848,6 +858,7 @@ void MediaRouteApplication::InboundWorkerThread(uint32_t worker_id)
 			// It may be called due to a normal stop signal.
 			continue;
 		}
+
 		auto stream = msg.value();
 		if (stream == nullptr)
 		{
@@ -856,7 +867,7 @@ void MediaRouteApplication::InboundWorkerThread(uint32_t worker_id)
 		}
 
 		// StreamDeliver media packet to Publisher(observer) of Transcoder(observer)
-		auto media_packet = stream->Pop();
+		auto media_packet = stream->PopAndNormalize();
 		if (media_packet == nullptr)
 		{
 			continue;
@@ -870,7 +881,9 @@ void MediaRouteApplication::InboundWorkerThread(uint32_t worker_id)
 		}
 
 		std::shared_lock<std::shared_mutex> lock(_observers_lock);
-		for (const auto &observer : _observers)
+		auto observers = _observers; // Avoid deadlock
+		lock.unlock();
+		for (const auto &observer : observers)
 		{
 			auto observer_type = observer->GetObserverType();
 
@@ -891,7 +904,23 @@ void MediaRouteApplication::InboundWorkerThread(uint32_t worker_id)
 			for (auto iter = it.first; iter != it.second; ++iter)
 			{
 				auto stream_tap = iter->second;
-				stream_tap->Push(media_packet);
+
+				if (stream_tap->GetState() == MediaRouterStreamTap::State::Tapped)
+				{
+					if (stream_tap->DoesNeedPastData())
+					{
+						stream_tap->SetNeedPastData(false);
+
+						for (const auto &item : stream->GetMirrorBuffer())
+						{
+							stream_tap->Push(item->packet);
+						}
+					}
+					else
+					{
+						stream_tap->Push(media_packet);
+					}
+				}
 			}
 		}
 	}
@@ -918,8 +947,14 @@ void MediaRouteApplication::OutboundWorkerThread(uint32_t worker_id)
 			continue;
 		}
 
+		// check stream is exist, there can be removed streams packet because of delay buffer
+		if (GetOutboundStream(stream->GetStream()->GetId()) == nullptr)
+		{
+			continue;
+		}
+
 		// StreamDeliver media packet to Publisher(observer) of Transcoder(observer)
-		auto media_packet = stream->Pop();
+		auto media_packet = stream->PopAndNormalize();
 		if (media_packet == nullptr)
 		{
 			continue;
@@ -931,7 +966,9 @@ void MediaRouteApplication::OutboundWorkerThread(uint32_t worker_id)
 		}
 
 		std::shared_lock<std::shared_mutex> lock(_observers_lock);
-		for (const auto &observer : _observers)
+		auto observers = _observers; // Avoid deadlock
+		lock.unlock();
+		for (const auto &observer : observers)
 		{
 			auto observer_type = observer->GetObserverType();
 
@@ -939,7 +976,6 @@ void MediaRouteApplication::OutboundWorkerThread(uint32_t worker_id)
 			{
 				// Get Stream Info
 				auto stream_info = stream->GetStream();
-
 				observer->OnSendFrame(stream_info, media_packet);
 			}
 		}
@@ -953,7 +989,19 @@ void MediaRouteApplication::OutboundWorkerThread(uint32_t worker_id)
 				auto stream_tap = iter->second;
 				if (stream_tap->GetState() == MediaRouterStreamTap::State::Tapped)
 				{
-					stream_tap->Push(media_packet);
+					if (stream_tap->DoesNeedPastData())
+					{
+						stream_tap->SetNeedPastData(false);
+
+						for (const auto &item : stream->GetMirrorBuffer())
+						{
+							stream_tap->Push(item->packet);
+						}
+					}
+					else
+					{
+						stream_tap->Push(media_packet);
+					}
 				}
 			}
 		}

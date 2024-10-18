@@ -32,7 +32,15 @@ public:
         Error
     };
 
+    uint32_t GetId() const;
+
     State GetState() const;
+
+    void Start();
+    void Stop();
+
+	void SetNeedPastData(bool need_past_data);
+	bool DoesNeedPastData() const;
 
     // If the stream is Tapped, MediaPacket will be popped from the buffer.
     // If the stream is not Tapped and the buffer is empty, nullptr will be returned immediately without waiting.
@@ -48,9 +56,17 @@ private:
     void SetStreamInfo(const std::shared_ptr<info::Stream> &stream_info);
     void SetState(State state);
 
+    uint32_t IssueUniqueId();
+
     std::shared_ptr<info::Stream> _tapped_stream_info;
     ov::Queue<std::shared_ptr<MediaPacket>> _buffer;
     State _state = State::Idle;
 
     bool _is_destroy_requested = false;
+
+    bool _is_started = true;
+
+	bool _need_past_data = false;
+
+    uint32_t _id = 0;
 };

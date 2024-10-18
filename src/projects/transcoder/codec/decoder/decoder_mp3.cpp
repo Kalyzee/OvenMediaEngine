@@ -41,7 +41,7 @@ bool DecoderMP3::Configure(std::shared_ptr<MediaTrack> context)
 	}
 
 	// Create packet parser
-	_parser = ::av_parser_init(_codec->id);
+	_parser = ::av_parser_init(GetCodecID());
 	if (_parser == nullptr)
 	{
 		logte("Parser not found");
@@ -201,7 +201,7 @@ void DecoderMP3::CodecThread()
 					auto codec_info = ffmpeg::Conv::CodecInfoToString(_context, _codec_par);
 
 					logti("[%s/%s(%u)] input track information: %s",
-						  _stream_info.GetApplicationInfo().GetName().CStr(), _stream_info.GetName().CStr(), _stream_info.GetId(), codec_info.CStr());
+						  _stream_info.GetApplicationInfo().GetVHostAppName().CStr(), _stream_info.GetName().CStr(), _stream_info.GetId(), codec_info.CStr());
 
 					_change_format = true;
 
@@ -236,7 +236,7 @@ void DecoderMP3::CodecThread()
 
 			_last_pkt_pts = output_frame->GetPts();
 
-			SendOutputBuffer(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(output_frame));
+			Complete(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(output_frame));
 		}
 	}
 }

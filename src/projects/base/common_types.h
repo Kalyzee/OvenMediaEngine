@@ -37,7 +37,8 @@ enum class CommonErrorCode : int16_t
 	ALREADY_EXISTS = -3,
 	INVALID_REQUEST = -4,
 	UNAUTHORIZED = -5,
-	INVALID_PARAMETER = -6
+	INVALID_PARAMETER = -6,
+	INVALID_STATE = -7
 };
 
 enum class StreamSourceType : int8_t
@@ -52,7 +53,8 @@ enum class StreamSourceType : int8_t
 	Srt,
 	Transcoder,
 	File,
-	Scheduled
+	Scheduled,
+	Multiplex
 };
 
 enum class StreamRepresentationType : int8_t
@@ -79,7 +81,8 @@ enum class ProviderType : int8_t
 	WebRTC,
 	Srt,
 	File,
-	Scheduled
+	Scheduled,
+	Multiplex
 };
 
 // Note : If you update PublisherType, you have to update /base/ovlibrary/converter.h:ToString(PublisherType type)
@@ -87,16 +90,15 @@ enum class PublisherType : int8_t
 {
 	Unknown = 0,
 	Webrtc,
-	MpegtsPush,
-	RtmpPush,
-	SrtPush,
-	Hls,
-	Dash,
-	LLDash,
+	MpegtsPush, // Deprecated
+	RtmpPush,	// Deprecated
+	SrtPush,	// Deprecated
+	Push,
 	LLHls,
 	Ovt,
 	File,
 	Thumbnail,
+	Hls, // HLSv3
 	NumberOfPublishers,
 };
 
@@ -148,6 +150,12 @@ public:
 
 	// Currently only used for RTSP Provider only
 	bool last_fragment_complete = false;
+
+	void AddFragment(size_t offset, size_t length)
+	{
+		fragmentation_offset.push_back(offset);
+		fragmentation_length.push_back(length);
+	}
 
 	size_t GetCount() const
 	{
@@ -307,6 +315,8 @@ static ov::String StringFromStreamSourceType(const StreamSourceType &type)
 			return "File";
 		case StreamSourceType::Scheduled:
 			return "Scheduled";
+		case StreamSourceType::Multiplex:
+			return "Multiplex";
 	}
 
 	return "Unknown";
@@ -349,6 +359,8 @@ static ov::String StringFromProviderType(const ProviderType &type)
 			return "File";
 		case ProviderType::Scheduled:
 			return "Scheduled";
+		case ProviderType::Multiplex:
+			return "Multiplex";
 	}
 
 	return "Unknown";
@@ -369,12 +381,8 @@ static ov::String StringFromPublisherType(const PublisherType &type)
 			return "RTMPPush";
 		case PublisherType::SrtPush:
 			return "SRTPush";
-		case PublisherType::Hls:
-			return "HLS";
-		case PublisherType::Dash:
-			return "DASH";
-		case PublisherType::LLDash:
-			return "LLDASH";
+		case PublisherType::Push:
+			return "Push";			
 		case PublisherType::LLHls:
 			return "LLHLS";
 		case PublisherType::Ovt:
@@ -383,6 +391,8 @@ static ov::String StringFromPublisherType(const PublisherType &type)
 			return "File";
 		case PublisherType::Thumbnail:
 			return "Thumbnail";
+		case PublisherType::Hls:
+			return "TS";
 	}
 
 	return "Unknown";

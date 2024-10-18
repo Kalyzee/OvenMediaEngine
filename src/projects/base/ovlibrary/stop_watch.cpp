@@ -23,9 +23,20 @@ namespace ov
 
 	void StopWatch::Start()
 	{
+		if (IsStart() == true)
+		{
+			return;
+		}
+
 		_is_valid = true;
 		_start = std::chrono::high_resolution_clock::now();
 		_last = _start;
+	}
+
+	void StopWatch::Restart()
+	{
+		Stop();
+		Start();
 	}
 
 	void StopWatch::Stop()
@@ -36,6 +47,11 @@ namespace ov
 	void StopWatch::Pause()
 	{
 		if (IsStart() == false)
+		{
+			return;
+		}
+
+		if (IsPaused() == true)
 		{
 			return;
 		}

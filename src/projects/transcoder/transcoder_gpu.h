@@ -41,17 +41,21 @@ public:
 
 protected:
 	bool CheckSupportedQSV();
+	bool CheckSupportedNILOGAN();
 	bool CheckSupportedNV();
 	bool CheckSupportedXMA();
 
 	AVBufferRef *GetDeviceContextQSV(int32_t gpu_id = 0);
+	AVBufferRef *GetDeviceContextNILOGAN(int32_t gpu_id = 0);
 	AVBufferRef *GetDeviceContextNV(int32_t gpu_id = 0);
 
 	bool IsSupportedQSV(int32_t gpu_id = 0);
+	bool IsSupportedNILOGAN(int32_t gpu_id = 0);
 	bool IsSupportedNV(int32_t gpu_id = 0);
 	bool IsSupportedXMA(int32_t gpu_id = 0);
 
 	int32_t GetDeviceCountQSV();
+	int32_t GetDeviceCountNILOGAN();
 	int32_t GetDeviceCountNV();
 	int32_t GetDeviceCountXMA();
 
@@ -62,9 +66,20 @@ protected:
 	AVBufferRef *_device_context_qsv[MAX_DEVICE_COUNT];
 	int32_t _device_count_qsv;
 
+	AVBufferRef *_device_context_nilogan[MAX_DEVICE_COUNT];
+	int32_t _device_count_nilogan;
+
 	AVBufferRef *_device_context_nv[MAX_DEVICE_COUNT];
 	int32_t _device_count_nv;
 
 	void CodecThread();
 	std::thread _thread;
+
+public:
+	std::mutex& GetDeviceMutex() {
+		return _device_mutex;
+	}
+protected:
+	// Global synchronization for specific hardware (Xilinx U30)
+	std::mutex _device_mutex;
 };

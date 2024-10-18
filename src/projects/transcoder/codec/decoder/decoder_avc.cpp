@@ -18,6 +18,41 @@ bool DecoderAVC::Configure(std::shared_ptr<MediaTrack> context)
 		return false;
 	}
 
+	// Create packet parser
+	_parser = ::av_parser_init(GetCodecID());
+	if (_parser == nullptr)
+	{
+		logte("Parser not found");
+		return false;
+	}
+	_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+
+	// Initialize codec
+	if (InitCodec() == false)
+	{
+		return false;
+	}
+
+	try
+	{
+		_kill_flag = false;
+
+		_codec_thread = std::thread(&TranscodeDecoder::CodecThread, this);
+		pthread_setname_np(_codec_thread.native_handle(), ov::String::FormatString("Dec%s", avcodec_get_name(GetCodecID())).CStr());
+	}
+	catch (const std::system_error &e)
+	{
+		logte("Failed to start decoder thread");
+		_kill_flag = true;
+		return false;
+	}
+
+	return true;
+}
+
+
+bool DecoderAVC::InitCodec()
+{
 	const AVCodec *_codec = ::avcodec_find_decoder(GetCodecID());
 	if (_codec == nullptr)
 	{
@@ -33,6 +68,8 @@ bool DecoderAVC::Configure(std::shared_ptr<MediaTrack> context)
 	}
 
 	_context->time_base = ffmpeg::Conv::TimebaseToAVRational(GetTimebase());
+	_context->thread_count = 2;
+	_context->thread_type = FF_THREAD_FRAME;
 
 	// Set the number of b frames for compatibility with specific encoders.
 	auto bframes = GetRefTrack()->HasBframes()?1:0;
@@ -47,29 +84,32 @@ bool DecoderAVC::Configure(std::shared_ptr<MediaTrack> context)
 		return false;
 	}
 
-	// Create packet parser
-	_parser = ::av_parser_init(_codec->id);
-	if (_parser == nullptr)
-	{
-		logte("Parser not found");
-		return false;
-	}
 
-	_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+	_change_format = false;
 
-	// Generates a thread that reads and encodes frames in the input_buffer queue and places them in the output queue.
-	try
-	{
-		_kill_flag = false;
+	return true;
+}
 
-		_codec_thread = std::thread(&TranscodeDecoder::CodecThread, this);
-		pthread_setname_np(_codec_thread.native_handle(), ov::String::FormatString("Dec%s", avcodec_get_name(GetCodecID())).CStr());
-	}
-	catch (const std::system_error &e)
+void DecoderAVC::UninitCodec()
+{
+	::avcodec_close(_context);
+	::avcodec_free_context(&_context);
+
+	_context = nullptr;
+}
+
+bool DecoderAVC::ReinitCodecIfNeed()
+{
+	if (_context->width != 0 && _context->height != 0 && (_parser->width != _context->width || _parser->height != _context->height))
 	{
-		logte("Failed to start decoder thread");
-		_kill_flag = true;
-		return false;
+		logti("Changed input resolution of %u track. (%dx%d -> %dx%d)", GetRefTrack()->GetId(), _context->width, _context->height, _parser->width, _parser->height);
+
+		UninitCodec();
+
+		if (InitCodec() == false)
+		{
+			return false;
+		}
 	}
 
 	return true;
@@ -106,10 +146,15 @@ void DecoderAVC::CodecThread()
 
 			int parsed_size = ::av_parser_parse2(_parser, _context, &_pkt->data, &_pkt->size,
 												 data + offset, static_cast<int>(remained_size), pts, dts, 0);
-
 			if (parsed_size < 0)
 			{
 				logte("An error occurred while parsing: %d", parsed_size);
+				break;
+			}
+
+			if(ReinitCodecIfNeed() == false)
+			{
+				logte("An error occurred while reinit codec");
 				break;
 			}
 
@@ -154,7 +199,7 @@ void DecoderAVC::CodecThread()
 					empty_frame->SetPts(dts);
 					empty_frame->SetMediaType(cmn::MediaType::Video);
 
-					SendOutputBuffer(TranscodeResult::NoData, std::move(empty_frame));
+					Complete(TranscodeResult::NoData, std::move(empty_frame));
 
 					break;
 				}
@@ -208,7 +253,7 @@ void DecoderAVC::CodecThread()
 					{
 						auto codec_info = ffmpeg::Conv::CodecInfoToString(_context, _codec_par);
 						logti("[%s/%s(%u)] input track information: %s",
-							  _stream_info.GetApplicationInfo().GetName().CStr(),
+							  _stream_info.GetApplicationInfo().GetVHostAppName().CStr(),
 							  _stream_info.GetName().CStr(),
 							  _stream_info.GetId(),
 							  codec_info.CStr());
@@ -238,7 +283,7 @@ void DecoderAVC::CodecThread()
 					continue;
 				}
 
-				SendOutputBuffer(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
+				Complete(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
 			}
 		}
 	}

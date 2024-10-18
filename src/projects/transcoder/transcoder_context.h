@@ -75,6 +75,11 @@ public:
 	void SetDuration(int64_t duration)
 	{
 		_duration = duration;
+
+		if (_priv_data)
+		{
+			_priv_data->pkt_duration = duration;
+		}
 	}
 
 	void SetWidth(int32_t width)
@@ -238,6 +243,17 @@ public:
 	}
 	AVFrame* GetPrivData() const {
 		return _priv_data;
+	}
+
+	ov::String GetInfoString() {
+		ov::String info;
+
+		info.AppendFormat("TrackID(%d) ", GetTrackId());
+		info.AppendFormat("Type(%s) ", cmn::GetMediaTypeString(GetMediaType()).CStr());
+		info.AppendFormat("PTS(%" PRId64 ") ", GetPts());
+		info.AppendFormat("Duration(%" PRId64 ") ", GetDuration());
+
+		return info;
 	}
 
 private:

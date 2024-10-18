@@ -17,6 +17,7 @@ std::shared_ptr<MediaRouterStreamTap> MediaRouterStreamTap::Create(size_t buffer
 MediaRouterStreamTap::MediaRouterStreamTap(size_t buffer_size)
     : _buffer("MediaRouterStreamTap", buffer_size)
 {
+    _id = IssueUniqueId();
 }
 
 MediaRouterStreamTap::~MediaRouterStreamTap()
@@ -24,9 +25,41 @@ MediaRouterStreamTap::~MediaRouterStreamTap()
     Destroy();
 }
 
+uint32_t MediaRouterStreamTap::GetId() const
+{
+    return _id;
+}
+
+uint32_t MediaRouterStreamTap::IssueUniqueId()
+{
+    static std::atomic<uint32_t> last_issued(100);
+	return last_issued ++;
+}
+
 MediaRouterStreamTap::State MediaRouterStreamTap::GetState() const
 {
     return _state;
+}
+
+void MediaRouterStreamTap::SetNeedPastData(bool need_past_data)
+{
+	_need_past_data = need_past_data;
+}
+
+bool MediaRouterStreamTap::DoesNeedPastData() const
+{
+	return _need_past_data;
+}
+
+void MediaRouterStreamTap::Start()
+{
+    _is_started = true;
+}
+
+void MediaRouterStreamTap::Stop()
+{
+    _is_started = false;
+    _buffer.Clear();
 }
 
 std::shared_ptr<MediaPacket> MediaRouterStreamTap::Pop(int timeout_in_msec)
@@ -67,7 +100,18 @@ bool MediaRouterStreamTap::Push(const std::shared_ptr<MediaPacket> &media_packet
         return false;
     }
 
-    _buffer.Enqueue(media_packet);
+    if (_is_started == false)
+    {
+        return false;
+    }
+
+	if (media_packet->GetBitstreamFormat() == cmn::BitstreamFormat::OVEN_EVENT)
+	{
+		// Event packet doen't need to forward to tap
+		return true;
+	}
+
+    _buffer.Enqueue(media_packet->ClonePacket());
 
     return true;
 }

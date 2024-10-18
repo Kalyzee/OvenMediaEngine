@@ -77,6 +77,9 @@ bool LLHlsSession::Start()
 	_segment_max_age = cache_control.GetSegmentMaxAge();
 	_partial_segment_max_age = cache_control.GetPartialSegmentMaxAge();
 
+	_hls_legacy = llhls_conf.GetDefaultQueryString().GetBoolValue("_HLS_legacy", kDefaultHlsLegacy);
+	_hls_rewind = llhls_conf.GetDefaultQueryString().GetBoolValue("_HLS_rewind", kDefaultHlsRewind);
+	
 	return Session::Start();
 }
 
@@ -239,7 +242,8 @@ void LLHlsSession::OnMessageReceived(const std::any &message)
 	{
 	case RequestType::Playlist:
 	{	
-		bool legacy = false;
+		bool legacy = _hls_legacy; // default value by config
+		bool rewind = _hls_rewind; // default value by config
 
 		if (request_uri->HasQueryKey("_HLS_legacy"))
 		{
@@ -247,16 +251,33 @@ void LLHlsSession::OnMessageReceived(const std::any &message)
 			{
 				legacy = true;
 			}
+			else
+			{
+				legacy = false;
+			}
 		}
 
-		ResponsePlaylist(exchange, file, legacy);
+		if (request_uri->HasQueryKey("_HLS_rewind"))
+		{
+			if (request_uri->GetQueryValue("_HLS_rewind").UpperCaseString() == "YES")
+			{
+				rewind = true;
+			}
+			else
+			{
+				rewind = false;
+			}
+		}
+
+		ResponsePlaylist(exchange, file, legacy, rewind);
 		break;
 	}
 	case RequestType::Chunklist:
 	{
 		int64_t msn = -1, part = -1;
 		bool skip = false;
-		bool legacy = false;
+		bool legacy = _hls_legacy; // default value by config
+		bool rewind = _hls_rewind; // default value by config
 
 		// ?_HLS_msn=<M>&_HLS_part=<N>&_HLS_skip=YES|v2
 		if (request_uri->HasQueryKey("_HLS_msn"))
@@ -284,9 +305,25 @@ void LLHlsSession::OnMessageReceived(const std::any &message)
 			{
 				legacy = true;
 			}
+			else
+			{
+				legacy = false;
+			}
 		}
 
-		ResponseChunklist(exchange, file, track_id, msn, part, skip, legacy);
+		if (request_uri->HasQueryKey("_HLS_rewind"))
+		{
+			if (request_uri->GetQueryValue("_HLS_rewind").UpperCaseString() == "YES")
+			{
+				rewind = true;
+			}
+			else
+			{
+				rewind = false;
+			}
+		}
+
+		ResponseChunklist(exchange, file, track_id, msn, part, skip, legacy, rewind);
 		break;
 	}
 	case RequestType::InitializationSegment:
@@ -344,7 +381,7 @@ bool LLHlsSession::ParseFileName(const ov::String &file_name, RequestType &type,
 		track_id = ov::Converter::ToInt32(name_items[1].CStr());
 		stream_key = name_items[3];
 	}
-	else if (name_items[0] == "seg" || name_ext_items[1] != "m4s")
+	else if (name_items[0] == "seg" && name_ext_items[1] == "m4s")
 	{
 		// seg_<track id>_<segment number>_<media type>_<stream key>_llhls
 		if (name_items.size() < 6)
@@ -358,7 +395,7 @@ bool LLHlsSession::ParseFileName(const ov::String &file_name, RequestType &type,
 		segment_number = ov::Converter::ToInt64(name_items[2].CStr());
 		stream_key = name_items[4];
 	}
-	else if (name_items[0] == "part" || name_ext_items[1] != "m4s")
+	else if (name_items[0] == "part" && name_ext_items[1] == "m4s")
 	{
 		// part_<track id>_<segment number>_<partial number>_<media type>_<stream key>_llhls
 		if (name_items.size() < 7)
@@ -382,7 +419,7 @@ bool LLHlsSession::ParseFileName(const ov::String &file_name, RequestType &type,
 	return true;
 }
 
-void LLHlsSession::ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, bool legacy, bool holdIfAccepted /*= true*/)
+void LLHlsSession::ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, bool legacy, bool rewind, bool holdIfAccepted /*= true*/)
 {
 	auto llhls_stream = std::static_pointer_cast<LLHlsStream>(GetStream());
 	if (llhls_stream == nullptr)
@@ -404,30 +441,8 @@ void LLHlsSession::ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchang
 	}
 
 	// Get the playlist
-	auto query_string = ov::String::FormatString("session=%u_%s", GetId(), _session_key.CStr());
-	
-	if (_origin_mode == true)
-	{
-		query_string.Clear();
-	}
-
-	ov::String stream_key;
-	if (request_uri->HasQueryKey("stream_key"))
-	{
-		stream_key = request_uri->GetQueryValue("stream_key");
-	}
-
-	if (stream_key.IsEmpty() == false)
-	{
-		if (query_string.IsEmpty() == false)
-		{
-			query_string += "&";
-		}
-
-		query_string.AppendFormat("stream_key=%s", stream_key.CStr());
-	}
-
-	auto [result, playlist] = llhls_stream->GetMasterPlaylist(file_name, query_string, gzip, legacy);
+	auto query_string = MakeQueryStringToPropagate(request_uri);
+	auto [result, playlist] = llhls_stream->GetMasterPlaylist(file_name, query_string, gzip, legacy, rewind);
 	if (result == LLHlsStream::RequestResult::Success)
 	{
 		// Send the playlist
@@ -463,14 +478,14 @@ void LLHlsSession::ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchang
 	else if (result == LLHlsStream::RequestResult::Accepted && holdIfAccepted == true)
 	{
 		// llhls.m3u8 is transmitted when more than one segment (any track) is created.
-		AddPendingRequest(exchange, RequestType::Playlist, file_name, 0, 1, 0, false, legacy);
+		AddPendingRequest(exchange, RequestType::Playlist, file_name, 0, 1, 0, false, legacy, rewind);
 		return ;
 	}
 	else
 	{
 		if (holdIfAccepted == false)
 		{
-			logtw("%s/%s/%s Failed to respond to pending request.", GetApplication()->GetName().CStr(), GetStream()->GetName().CStr(), file_name.CStr());
+			logtw("%s/%s/%s Failed to respond to pending request.", GetApplication()->GetVHostAppName().CStr(), GetStream()->GetName().CStr(), file_name.CStr());
 		}
 
 		// Send error response
@@ -480,7 +495,7 @@ void LLHlsSession::ResponsePlaylist(const std::shared_ptr<http::svr::HttpExchang
 	ResponseData(exchange);
 }
 
-void LLHlsSession::ResponseChunklist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, const int32_t &track_id, int64_t msn, int64_t part, bool skip, bool legacy, bool holdIfAccepted /*= true*/)
+void LLHlsSession::ResponseChunklist(const std::shared_ptr<http::svr::HttpExchange> &exchange, const ov::String &file_name, const int32_t &track_id, int64_t msn, int64_t part, bool skip, bool legacy, bool rewind, bool holdIfAccepted /*= true*/)
 {
 	auto llhls_stream = std::static_pointer_cast<LLHlsStream>(GetStream());
 	if (llhls_stream == nullptr)
@@ -511,29 +526,9 @@ void LLHlsSession::ResponseChunklist(const std::shared_ptr<http::svr::HttpExchan
 	}
 
 	// Get the chunklist
-	auto query_string = ov::String::FormatString("session=%u_%s", GetId(), _session_key.CStr());
-	if (_origin_mode == true)
-	{
-		query_string.Clear();
-	}
+	auto query_string = MakeQueryStringToPropagate(request_uri);
 
-	ov::String stream_key;
-	if (request_uri->HasQueryKey("stream_key"))
-	{
-		stream_key = request_uri->GetQueryValue("stream_key");
-	}
-
-	if (stream_key.IsEmpty() == false)
-	{
-		if (query_string.IsEmpty() == false)
-		{
-			query_string += "&";
-		}
-
-		query_string.AppendFormat("stream_key=%s", stream_key.CStr());
-	}
-
-	auto [result, chunklist] = llhls_stream->GetChunklist(query_string, track_id, msn, part, skip, gzip, legacy);
+	auto [result, chunklist] = llhls_stream->GetChunklist(query_string, track_id, msn, part, skip, gzip, legacy, rewind);
 	if (result == LLHlsStream::RequestResult::Success)
 	{
 		// Send the chunklist
@@ -591,14 +586,14 @@ void LLHlsSession::ResponseChunklist(const std::shared_ptr<http::svr::HttpExchan
 		//TODO(Getroot): EXT-X-SKIP is under debugging
 
 		skip = false;
-		AddPendingRequest(exchange, RequestType::Chunklist, file_name, track_id, msn, part, skip, legacy);
+		AddPendingRequest(exchange, RequestType::Chunklist, file_name, track_id, msn, part, skip, legacy, rewind);
 		return ;
 	}
 	else
 	{
 		if (holdIfAccepted == false)
 		{
-			logtw("%s/%s/%s Failed to respond to pending request.", GetApplication()->GetName().CStr(), GetStream()->GetName().CStr(), file_name.CStr());
+			logtw("%s/%s/%s Failed to respond to pending request.", GetApplication()->GetVHostAppName().CStr(), GetStream()->GetName().CStr(), file_name.CStr());
 		}
 
 		// Send error response
@@ -756,14 +751,14 @@ void LLHlsSession::ResponsePartialSegment(const std::shared_ptr<http::svr::HttpE
 	else if (result == LLHlsStream::RequestResult::Accepted && holdIfAccepted == true)
 	{
 		// Hold
-		AddPendingRequest(exchange, RequestType::PartialSegment, file_name, track_id, segment_number, partial_number, false, false);
+		AddPendingRequest(exchange, RequestType::PartialSegment, file_name, track_id, segment_number, partial_number, false, false, false);
 		return ;
 	}
 	else
 	{
 		if (holdIfAccepted == false)
 		{
-			logtw("%s/%s/%s Failed to respond to pending request.", GetApplication()->GetName().CStr(), GetStream()->GetName().CStr(), file_name.CStr());
+			logtw("%s/%s/%s Failed to respond to pending request.", GetApplication()->GetVHostAppName().CStr(), GetStream()->GetName().CStr(), file_name.CStr());
 		}
 
 		// Send error response
@@ -801,7 +796,7 @@ void LLHlsSession::OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn
 		{
 			// Send the playlist
 			auto exchange = it->exchange;
-			ResponsePlaylist(exchange, it->file_name, it->legacy, false);
+			ResponsePlaylist(exchange, it->file_name, it->legacy, it->rewind, false);
 			it = _pending_requests.erase(it);
 		}
 		else if ( (it->track_id == track_id) && 
@@ -811,7 +806,7 @@ void LLHlsSession::OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn
 			switch (it->type)
 			{
 			case RequestType::Chunklist:
-				ResponseChunklist(it->exchange, it->file_name, it->track_id, it->segment_number, it->partial_number, it->skip, it->legacy, false);
+				ResponseChunklist(it->exchange, it->file_name, it->track_id, it->segment_number, it->partial_number, it->skip, it->legacy, it->rewind, false);
 				break;
 			case RequestType::PartialSegment:
 				ResponsePartialSegment(it->exchange, it->file_name, it->track_id, it->segment_number, it->partial_number, false);
@@ -840,7 +835,7 @@ void LLHlsSession::OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn
 	}
 }
 
-bool LLHlsSession::AddPendingRequest(const std::shared_ptr<http::svr::HttpExchange> &exchange, const RequestType &type, const ov::String &file_name, const int32_t &track_id, const int64_t &segment_number, const int64_t &partial_number, const bool &skip, const bool &legacy)
+bool LLHlsSession::AddPendingRequest(const std::shared_ptr<http::svr::HttpExchange> &exchange, const RequestType &type, const ov::String &file_name, const int32_t &track_id, const int64_t &segment_number, const int64_t &partial_number, const bool &skip, const bool &legacy, const bool &rewind)
 {
 	// Add the request to the pending list
 	PendingRequest request;
@@ -851,6 +846,7 @@ bool LLHlsSession::AddPendingRequest(const std::shared_ptr<http::svr::HttpExchan
 	request.partial_number = partial_number;
 	request.skip = skip;
 	request.legacy = legacy;
+	request.rewind = rewind;
 	request.exchange = exchange;
 
 	// Add the request to the pending list
@@ -859,11 +855,40 @@ bool LLHlsSession::AddPendingRequest(const std::shared_ptr<http::svr::HttpExchan
 	if (_pending_requests.size() > MAX_PENDING_REQUESTS)
 	{
 		logtd("[%s/%s/%u] Too many pending requests (%u)", 
-				GetApplication()->GetName().CStr(),
+				GetApplication()->GetVHostAppName().CStr(),
 				GetStream()->GetName().CStr(),
 				GetId(),
 				_pending_requests.size());
 	}
 
 	return true;
+}
+
+ov::String LLHlsSession::MakeQueryStringToPropagate(const std::shared_ptr<ov::Url> &request_uri)
+{
+	auto query_string = ov::String::FormatString("session=%u_%s", GetId(), _session_key.CStr());
+	if (_origin_mode == true)
+	{
+		// Origin mode doesn't need session key
+		query_string.Clear();
+	}
+
+	// stream_key is propagated to the child resources
+	ov::String stream_key;
+	if (request_uri->HasQueryKey("stream_key"))
+	{
+		stream_key = request_uri->GetQueryValue("stream_key");
+	}
+
+	if (stream_key.IsEmpty() == false)
+	{
+		if (query_string.IsEmpty() == false)
+		{
+			query_string += "&";
+		}
+
+		query_string.AppendFormat("stream_key=%s", stream_key.CStr());
+	}
+
+	return query_string;
 }

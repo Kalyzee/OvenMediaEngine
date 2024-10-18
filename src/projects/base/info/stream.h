@@ -54,15 +54,19 @@ namespace info
 		ov::String GetOriginStreamUUID() const;
 
 		const std::chrono::system_clock::time_point &GetInputStreamCreatedTime() const;
-
 		const std::chrono::system_clock::time_point &GetCreatedTime() const;
+
+		void SetPublishedTimeNow();
+		const std::chrono::system_clock::time_point &GetInputStreamPublishedTime() const;
+		const std::chrono::system_clock::time_point &GetPublishedTime() const;
+
 		uint32_t GetUptimeSec();
 		StreamSourceType GetSourceType() const;
 
 		StreamRepresentationType GetRepresentationType() const;
 		void SetRepresentationType(const StreamRepresentationType &type);
 
-		int32_t IssueUniqueTrackId();
+		uint32_t IssueUniqueTrackId();
 		bool AddTrack(const std::shared_ptr<MediaTrack> &track);
 		bool UpdateTrack(const std::shared_ptr<MediaTrack> &track);
 		bool RemoveTrack(uint32_t id);
@@ -137,6 +141,7 @@ namespace info
 
 	private:
 		std::chrono::system_clock::time_point _created_time;
+		std::chrono::system_clock::time_point _published_time;
 
 		// Where does the stream come from?
 		StreamSourceType _source_type;

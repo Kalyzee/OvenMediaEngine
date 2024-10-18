@@ -38,6 +38,7 @@ public:
 	void SendVideoFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 	void SendAudioFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 	void SendDataFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
+	void OnEvent(const std::shared_ptr<MediaEvent> &event) override;
 
 	enum class RequestResult : uint8_t
 	{
@@ -65,11 +66,15 @@ public:
 
 	uint64_t GetMaxChunkDurationMS() const;
 
-	std::tuple<RequestResult, std::shared_ptr<const ov::Data>> GetMasterPlaylist(const ov::String &file_name, const ov::String &chunk_query_string, bool gzip, bool legacy, bool include_path=true);
-	std::tuple<RequestResult, std::shared_ptr<const ov::Data>> GetChunklist(const ov::String &chunk_query_string, const int32_t &track_id, int64_t msn, int64_t psn, bool skip, bool gzip, bool legacy) const;
+	std::tuple<RequestResult, std::shared_ptr<const ov::Data>> GetMasterPlaylist(const ov::String &file_name, const ov::String &chunk_query_string, bool gzip, bool legacy, bool rewind, bool include_path=true);
+	std::tuple<RequestResult, std::shared_ptr<const ov::Data>> GetChunklist(const ov::String &chunk_query_string, const int32_t &track_id, int64_t msn, int64_t psn, bool skip, bool gzip, bool legacy, bool rewind) const;
 	std::tuple<RequestResult, std::shared_ptr<ov::Data>> GetInitializationSegment(const int32_t &track_id) const;
 	std::tuple<RequestResult, std::shared_ptr<ov::Data>> GetSegment(const int32_t &track_id, const int64_t &segment_number) const;
 	std::tuple<RequestResult, std::shared_ptr<ov::Data>> GetChunk(const int32_t &track_id, const int64_t &segment_number, const int64_t &chunk_number) const;
+
+	//////////////////////////
+	// For Dump API
+	//////////////////////////
 
 	// <result, error message>
 	std::tuple<bool, ov::String> StartDump(const std::shared_ptr<info::Dump> &dump_info);
@@ -130,6 +135,14 @@ private:
 	int64_t GetMinimumLastSegmentNumber() const;
 	bool StopToSaveOldSegmentsInfo();
 
+	//////////////////////////
+	// Events
+	//////////////////////////
+
+	// <result, error message>
+	std::tuple<bool, ov::String> ConcludeLive();
+	bool IsConcluded() const;
+
 	// Config
 	bmff::FMP4Packager::Config _packager_config;
 	bmff::FMP4Storage::Config _storage_config;
@@ -175,4 +188,13 @@ private:
 
 	bmff::CencProperty _cenc_property;
 	ov::String _key_uri; // string, only for FairPlay
+
+	// PROGRAM-DATE-TIME
+	bool _first_chunk = true;
+	int64_t _wallclock_offset_ms = 0;
+
+	// ConcludeLive
+	// Append #EXT-X-ENDLIST all chunklists, and no more update segment and chunklist
+	bool _concluded = false;
+	mutable std::shared_mutex _concluded_lock;
 };

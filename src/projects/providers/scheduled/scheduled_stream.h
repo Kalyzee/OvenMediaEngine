@@ -9,7 +9,10 @@
 #pragma once
 
 #include <modules/ffmpeg/ffmpeg_conv.h>
+#include <orchestrator/orchestrator.h>
+#include <mediarouter/mediarouter_stream_tap.h>
 #include <base/provider/stream.h>
+
 #include "schedule.h"
 
 namespace pvd
@@ -18,7 +21,7 @@ namespace pvd
     constexpr int kScheduledVideoTrackId = 0;
     constexpr int kScheduledAudioTrackId = 1;
     constexpr int kScheduledDataTrackId = 2;
-    constexpr int kScheduledTimebase = 1000;
+    constexpr int kScheduledVideoTimebase = 90000;
 
     class ScheduledStream : public Stream
     {
@@ -45,21 +48,42 @@ namespace pvd
         {
             PLAY_NEXT_ITEM,
             PLAY_NEXT_PROGRAM,
-            PLAY_FALLBACK,
             ERROR,
-            STOP
+            FAILBACK
         };
 
-        PlaybackResult PlayFile(const std::shared_ptr<Schedule::Item> &item);
+        // If there is no current program
+        //      ==> Continue playing until the current program changes
+        // If there is no current item
+        //      ==> Continue playing until the current program changes (in cases where there is no item, this might occur later in the case of non-repeat programs)
+        // If the current item encounters an error
+        //      ==> Continue playing until the item returns to a normal state, or until the duration of the item ends, or until the current program changes
+
+        // If there is an error in the fallback
+        //     ==> Keep attempting
+        // If the fallback ends (program change, item change, item duration ends)
+        //     ==> return true
+        // If there is no fallback (not configured)
+        //     ==> return false
+        PlaybackResult PlayFallbackOrWait();
+
+        PlaybackResult PlayItem(const std::shared_ptr<Schedule::Item> &item, bool fallback_item = false);
+
+        PlaybackResult PlayFile(const std::shared_ptr<Schedule::Item> &item, bool fallback_item);
         AVFormatContext *PrepareFilePlayback(const std::shared_ptr<Schedule::Item> &item);
-
-        PlaybackResult PlayStream(const std::shared_ptr<Schedule::Item> &item);
-        PlaybackResult PlayFallback();
-
+        
+        PlaybackResult PlayStream(const std::shared_ptr<Schedule::Item> &item, bool fallback_item);
+        std::shared_ptr<MediaRouterStreamTap> PrepareStreamPlayback(const std::shared_ptr<Schedule::Item> &item);
+        
         std::shared_ptr<Schedule> GetSchedule() const;
         bool CheckCurrentProgramChanged();
+        bool CheckCurrentFallbackProgramChanged();
+
+        bool CheckCurrentItemAvailable();
+        bool CheckFileItemAvailable(const std::shared_ptr<Schedule::Item> &item);
+        bool CheckStreamItemAvailable(const std::shared_ptr<Schedule::Item> &item);
         
-        int FindTrackIdByAvstreamId(int avstream_id) const;
+        int FindTrackIdByOriginId(int origin_id) const;
 
         std::shared_ptr<Schedule> _schedule;
         mutable std::shared_mutex _schedule_mutex;
@@ -78,10 +102,12 @@ namespace pvd
         std::shared_ptr<Schedule::Item> _current_item;
         int64_t _current_item_position_ms = 0;
 
-        std::map<int, int> _avstream_id_track_id_map;
+        // Fallback
+        std::shared_ptr<Schedule::Program> _fallback_program;
 
-        std::map<int, int64_t> _last_track_duration_map;
+        std::map<int, int> _origin_id_track_id_map;
 
         ov::StopWatch _realtime_clock;
+        ov::StopWatch _failback_check_clock;
     };
 }

@@ -46,7 +46,9 @@ namespace cmn
 
 		HVCC, // H.265 HVCC
 
-		MP3
+		MP3,
+
+		OVEN_EVENT // OvenMediaEngine defined event
 	};
 
 	enum class PacketType : int8_t
@@ -103,10 +105,17 @@ namespace cmn
 		NVENC,		// HW
 		QSV,		// HW
 		XMA,		// HW
+		NILOGAN,	// HW
 		LIBVPX,		// SW
 		FDKAAC,		// SW
 		LIBOPUS,	// SW
 		NB
+	};
+
+	enum class KeyFrameIntervalType : uint8_t
+	{
+		FRAME = 0,
+		TIME
 	};
 
 	static bool IsVideoCodec(cmn::MediaCodecId codec_id)
@@ -114,6 +123,7 @@ namespace cmn
 		if (codec_id == cmn::MediaCodecId::H264 ||
 			codec_id == cmn::MediaCodecId::H265 ||
 			codec_id == cmn::MediaCodecId::Vp8 ||
+			codec_id == cmn::MediaCodecId::Vp9 ||
 			codec_id == cmn::MediaCodecId::Flv ||
 			codec_id == cmn::MediaCodecId::Vp9)
 		{
@@ -221,6 +231,8 @@ namespace cmn
 				return "PNG";
 			case cmn::BitstreamFormat::ID3v2:
 				return "ID3v2";
+			case cmn::BitstreamFormat::OVEN_EVENT:
+				return "OVEN_EVENT";
 			default:
 				return "Unknown";
 		}
@@ -245,6 +257,10 @@ namespace cmn
 		else if (name.HasSuffix("_QSV") || name.HasSuffix("QSV"))
 		{
 			return cmn::MediaCodecModuleId::QSV;
+		}
+		else if (name.HasSuffix("_NILOGAN") || name.HasSuffix("NILOGAN"))
+		{
+			return cmn::MediaCodecModuleId::NILOGAN;
 		}
 		else if (name.HasSuffix("_XMA") || name.HasSuffix("XMA"))
 		{
@@ -280,6 +296,8 @@ namespace cmn
 				return "nvenc";
 			case cmn::MediaCodecModuleId::QSV:
 				return "qsv";
+			case cmn::MediaCodecModuleId::NILOGAN:
+				return "nilogan";
 			case cmn::MediaCodecModuleId::XMA:
 				return "xma";				
 			case cmn::MediaCodecModuleId::LIBVPX:
@@ -303,6 +321,7 @@ namespace cmn
 			case cmn::MediaCodecModuleId::NVENC:
 			case cmn::MediaCodecModuleId::QSV:
 			case cmn::MediaCodecModuleId::XMA:
+			case cmn::MediaCodecModuleId::NILOGAN:
 				return true;
 			default:
 				break;
@@ -311,7 +330,7 @@ namespace cmn
 		return false;
 	}
 
-	static ov::String GetStringFromCodecId(cmn::MediaCodecId id)
+	static ov::String GetCodecIdToString(cmn::MediaCodecId id)
 	{
 		switch (id)
 		{
@@ -350,6 +369,7 @@ namespace cmn
 			name == "H264_BEAMR" ||
 			name == "H264_NVENC" ||
 			name == "H264_QSV" ||
+			name == "H264_NILOGAN" ||
 			name == "H264_XMA")
 		{
 			return cmn::MediaCodecId::H264;
@@ -357,6 +377,7 @@ namespace cmn
 		else if (name == "H265" || 
 				 name == "H265_NVENC" || 
 				 name == "H265_QSV" ||
+				 name == "H265_NILOGAN" ||
 		 		 name == "H265_XMA")
 		{
 			return cmn::MediaCodecId::H265;
@@ -397,6 +418,35 @@ namespace cmn
 		}
 
 		return cmn::MediaCodecId::None;
+	}
+
+	static ov::String GetKeyFrameIntervalTypeToString(cmn::KeyFrameIntervalType type)
+	{
+		switch (type)
+		{
+			case cmn::KeyFrameIntervalType::FRAME:
+				return "frame";
+			case cmn::KeyFrameIntervalType::TIME:
+				return "time";
+			default:
+				return "unknown";
+		}
+	}
+
+	static cmn::KeyFrameIntervalType GetKeyFrameIntervalTypeByName(ov::String type)
+	{
+		type.MakeLower();
+
+		if (type == "frame")
+		{
+			return cmn::KeyFrameIntervalType::FRAME;
+		}
+		else if (type == "time")
+		{
+			return cmn::KeyFrameIntervalType::TIME;
+		}
+
+		return cmn::KeyFrameIntervalType::FRAME;
 	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////

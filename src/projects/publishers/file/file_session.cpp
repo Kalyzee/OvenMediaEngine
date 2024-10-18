@@ -154,7 +154,7 @@ namespace pub
 
 			if (ffmpeg::Conv::IsSupportCodec(output_format, track->GetCodecId()) == false)
 			{
-				logtw("%s format does not support the codec(%s)", output_format.CStr(), cmn::GetStringFromCodecId(track->GetCodecId()).CStr());
+				logtw("%s format does not support the codec(%s)", output_format.CStr(), cmn::GetCodecIdToString(track->GetCodecId()).CStr());
 				continue;
 			}
 
@@ -179,7 +179,7 @@ namespace pub
 			return false;
 		}
 
-		logti("Start recording.%s", GetRecord()->GetInfoString().CStr());
+		logtd("Recording Started. %s", GetRecord()->GetInfoString().CStr());
 
 		return true;
 	}
@@ -291,7 +291,7 @@ namespace pub
 			
 			_writer = nullptr;
 
-			logti("Recording finished.%s", GetRecord()->GetInfoString().CStr());
+			logtd("Recording Completed. %s", GetRecord()->GetInfoString().CStr());
 
 			GetRecord()->IncreaseSequence();
 		}
@@ -323,14 +323,18 @@ namespace pub
 		// Drop until the first keyframe of the main track is received.
 		if (_found_first_keyframe == false)
 		{
-			if ((_default_track == session_packet->GetTrackId() && session_packet->GetFlag() == MediaPacketFlag::Key) == true)
+			if (_default_track == session_packet->GetTrackId())
 			{
-				_found_first_keyframe = true;
-			}
-			else
-			{
-				GetRecord()->UpdateRecordStartTime();
-				return;
+				if ((session_packet->GetMediaType() == cmn::MediaType::Audio) ||
+					(session_packet->GetMediaType() == cmn::MediaType::Video && session_packet->GetFlag() == MediaPacketFlag::Key))
+				{
+					_found_first_keyframe = true;
+				}
+				else
+				{
+					GetRecord()->UpdateRecordStartTime();
+					return;
+				}
 			}
 		}
 
@@ -338,7 +342,9 @@ namespace pub
 
 		// When setting interval parameter, perform segmentation recording.
 		if (((uint64_t)GetRecord()->GetInterval() > 0) && (GetRecord()->GetRecordTime() > (uint64_t)GetRecord()->GetInterval()) &&
-			(session_packet->GetFlag() == MediaPacketFlag::Key) && (session_packet->GetTrackId() == _default_track))
+			(session_packet->GetTrackId() == _default_track) &&
+			((session_packet->GetMediaType() == cmn::MediaType::Audio) ||
+			(session_packet->GetMediaType() == cmn::MediaType::Video && session_packet->GetFlag() == MediaPacketFlag::Key)) )
 		{
 			need_file_split = true;
 		}
@@ -554,7 +560,7 @@ namespace pub
 			{
 				// Delete Prefix virtualhost name. ex) #[VirtualHost]#Application
 				ov::String prefix = ov::String::FormatString("#%s#", host_config.GetName().CStr());
-				auto app_name = app->GetName();
+				auto app_name = app->GetVHostAppName();
 				auto application_name = app_name.ToString().Replace(prefix, "");
 
 				replaced_string = replaced_string.Replace(full_match, application_name);

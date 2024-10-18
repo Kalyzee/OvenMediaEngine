@@ -155,6 +155,9 @@ bool HEVCDecoderConfigurationRecord::Parse(const std::shared_ptr<ov::Data> &data
 	// parallelismType
 	_parallelism_type = parser.ReadBits<uint8_t>(2);
 
+	// reserved
+	parser.ReadBits<uint8_t>(6);
+
 	// chromaFormat
 	_chroma_format = parser.ReadBits<uint8_t>(2);
 
@@ -189,10 +192,10 @@ bool HEVCDecoderConfigurationRecord::Parse(const std::shared_ptr<ov::Data> &data
 	auto num_of_arrays = parser.ReadBits<uint8_t>(8);
 
 	// check length
-	if (parser.BytesRemained() < num_of_arrays * 3)
-	{
-		return false;
-	}
+	// if (parser.BytesRemained() < num_of_arrays * 3)
+	// {
+	// 	return false;
+	// }
 
 	for (size_t i = 0; i < num_of_arrays; ++i)
 	{
@@ -231,7 +234,46 @@ bool HEVCDecoderConfigurationRecord::Parse(const std::shared_ptr<ov::Data> &data
 			// add nalUnit to _nal_units
 			auto &v = _nal_units[nal_unit_type];
 			v.push_back(nal_unit);
+
+			// skip nalUnit
+			parser.SkipBytes(nal_unit_length);
 		}
+	}
+
+	return true;
+}
+
+bool HEVCDecoderConfigurationRecord::Equals(const std::shared_ptr<DecoderConfigurationRecord> &other) 
+{
+	if (other == nullptr)
+	{
+		return false;
+	}
+	
+	auto other_config = std::dynamic_pointer_cast<HEVCDecoderConfigurationRecord>(other);
+	if (other_config == nullptr)
+	{
+		return false;
+	}
+
+	if (GeneralProfileIDC() != other_config->GeneralProfileIDC())
+	{
+		return false;
+	}
+
+	if (GeneralLevelIDC() != other_config->GeneralLevelIDC())
+	{
+		return false;
+	}
+
+	if(GetWidth() != other_config->GetWidth())
+	{
+		return false;
+	}
+
+	if(GetHeight() != other_config->GetHeight())
+	{
+		return false;
 	}
 
 	return true;
@@ -247,48 +289,48 @@ std::shared_ptr<ov::Data> HEVCDecoderConfigurationRecord::Serialize()
 
 	ov::BitWriter bit(1024);
 
-	bit.Write(8, Version()); // configurationVersion
-	bit.Write(2, GeneralProfileSpace());
-	bit.Write(1, GeneralTierFlag());
-	bit.Write(5, GeneralProfileIDC());
-	bit.Write(32, GeneralProfileCompatibilityFlags());
+	bit.WriteBits(8, Version()); // configurationVersion
+	bit.WriteBits(2, GeneralProfileSpace());
+	bit.WriteBits(1, GeneralTierFlag());
+	bit.WriteBits(5, GeneralProfileIDC());
+	bit.WriteBits(32, GeneralProfileCompatibilityFlags());
 
-	bit.Write(32, GeneralConstraintIndicatorFlags() >> 16);
-	bit.Write(16, GeneralConstraintIndicatorFlags() & 0xFFFF);
+	bit.WriteBits(32, GeneralConstraintIndicatorFlags() >> 16);
+	bit.WriteBits(16, GeneralConstraintIndicatorFlags() & 0xFFFF);
 
-	bit.Write(8, GeneralLevelIDC());
+	bit.WriteBits(8, GeneralLevelIDC());
 
-	bit.Write(4, 0b1111); // reserved
-	bit.Write(12, MinSpatialSegmentationIDC());
-	bit.Write(6, 0b111111); // reserved
-	bit.Write(2, ParallelismType());
-	bit.Write(6, 0b111111); // reserved
-	bit.Write(2, ChromaFormat());
-	bit.Write(5, 0b11111); // reserved
-	bit.Write(3, BitDepthLumaMinus8());
-	bit.Write(5, 0b11111); // reserved
-	bit.Write(3, BitDepthChromaMinus8());
-	bit.Write(16, AvgFrameRate());
-	bit.Write(2, ConstantFrameRate());
-	bit.Write(3, NumTemporalLayers());
-	bit.Write(1, TemporalIdNested());
-	bit.Write(2, LengthSizeMinusOne());
+	bit.WriteBits(4, 0b1111); // reserved
+	bit.WriteBits(12, MinSpatialSegmentationIDC());
+	bit.WriteBits(6, 0b111111); // reserved
+	bit.WriteBits(2, ParallelismType());
+	bit.WriteBits(6, 0b111111); // reserved
+	bit.WriteBits(2, ChromaFormat());
+	bit.WriteBits(5, 0b11111); // reserved
+	bit.WriteBits(3, BitDepthLumaMinus8());
+	bit.WriteBits(5, 0b11111); // reserved
+	bit.WriteBits(3, BitDepthChromaMinus8());
+	bit.WriteBits(16, AvgFrameRate());
+	bit.WriteBits(2, ConstantFrameRate());
+	bit.WriteBits(3, NumTemporalLayers());
+	bit.WriteBits(1, TemporalIdNested());
+	bit.WriteBits(2, LengthSizeMinusOne());
 
-	bit.Write(8, _nal_units.size()); // numOfArrays
+	bit.WriteBits(8, _nal_units.size()); // numOfArrays
 
 	for (const auto &[nal_type, nal_units] : _nal_units)
 	{
 		// array_completeness when equal to 1 indicates that all NAL units of the given type are in the following array and none are in the stream; when equal to 0 indicates that additional NAL units of the indicated type may be in the stream; the default and permitted values are constrained by the sample entry name;
-		bit.Write(1, 1); // array_completeness
+		bit.WriteBits(1, 1); // array_completeness
 
-		bit.Write(1, 0); // reserved
-		bit.Write(6, nal_type); // nal_unit_type
-		bit.Write(16, nal_units.size()); // numNalus
+		bit.WriteBits(1, 0); // reserved
+		bit.WriteBits(6, nal_type); // nal_unit_type
+		bit.WriteBits(16, nal_units.size()); // numNalus
 
 		for (auto &nal_unit : nal_units)
 		{
-			bit.Write(16, nal_unit->GetLength()); // nalUnitLength
-			if (bit.Write(nal_unit->GetDataAs<uint8_t>(), nal_unit->GetLength()) == false) // nalUnit
+			bit.WriteBits(16, nal_unit->GetLength()); // nalUnitLength
+			if (bit.WriteData(nal_unit->GetDataAs<uint8_t>(), nal_unit->GetLength()) == false) // nalUnit
 			{
 				return nullptr;
 			}
