@@ -57,6 +57,11 @@ public:
 					   const std::shared_ptr<const SessionDescription> &offer_sdp,
 					   const std::shared_ptr<const SessionDescription> &answer_sdp) override;
 
+	bool OnSessionUpdate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+					   bool change_video_state, bool &enable_video, bool change_audio_state, bool &enable_audio,
+					   const std::shared_ptr<const SessionDescription> &offer_sdp,
+					   const std::shared_ptr<const SessionDescription> &answer_sdp) override;
+
 protected:
 	bool StartSignallingServer(const cfg::Server &server_config, const cfg::bind::cmm::Webrtc &webrtc_bind_config);
 	bool StartICEPorts(const cfg::Server &server_config, const cfg::bind::cmm::Webrtc &webrtc_bind_config);

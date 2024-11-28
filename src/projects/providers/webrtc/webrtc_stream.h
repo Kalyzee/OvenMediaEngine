@@ -10,6 +10,7 @@
 #pragma once
 
 #include <base/provider/push_provider/stream.h>
+#include <modules/http/server/web_socket/web_socket_session.h>
 
 #include "modules/ice/ice_port.h"
 #include "modules/sdp/session_description.h"
@@ -32,7 +33,8 @@ namespace pvd
 													const std::shared_ptr<const SessionDescription> &remote_sdp,
 													const std::shared_ptr<Certificate> &certificate, 
 													const std::shared_ptr<IcePort> &ice_port,
-													session_id_t ice_session_id);
+													session_id_t ice_session_id,
+													const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session);
 		
 		explicit WebRTCStream(StreamSourceType source_type, ov::String stream_name, 
 								const std::shared_ptr<PushProvider> &provider,
@@ -40,7 +42,8 @@ namespace pvd
 								const std::shared_ptr<const SessionDescription> &remote_sdp,
 								const std::shared_ptr<Certificate> &certificate, 
 								const std::shared_ptr<IcePort> &ice_port,
-								session_id_t ice_session_id);
+								session_id_t ice_session_id,
+								const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session);
 		~WebRTCStream() final;
 
 		bool Start() override;
@@ -56,6 +59,8 @@ namespace pvd
 		{
 			return _ice_session_id;
 		}
+
+		bool OnStreamPrepared(bool inbound) override;
 
 		// ------------------------------------------
 		// Implementation of PushStream
@@ -112,5 +117,7 @@ namespace pvd
 		bool _sent_sequence_header = false;
 
 		session_id_t _ice_session_id = 0;
+
+		std::shared_ptr<http::svr::ws::WebSocketSession> 	_ws_session; // Signalling  
 	};
 }

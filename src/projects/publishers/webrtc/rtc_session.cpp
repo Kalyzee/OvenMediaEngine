@@ -169,6 +169,7 @@ bool RtcSession::Start()
 
 	SendPlaylistInfo(_playlist);
 	SendRenditionChanged(_current_rendition);
+	SendSessionChanged();
 
 	logtd("Video PT(%d) Audio PT(%d) Video TrackID(%u) Audio TrackID(%u)", _video_payload_type, _audio_payload_type, 
 														current_video_track ? current_video_track->GetId() : -1,
@@ -359,6 +360,62 @@ bool RtcSession::SendRenditionChanged(const std::shared_ptr<const RtcRendition> 
 	return ws_response->Send(json_response) > 0;
 }
 
+bool RtcSession::EnableVideo(bool enable)
+{
+	bool updated = enable != _video_enabled;
+	_video_enabled = enable;
+	if (updated) {
+		SendSessionChanged();
+	}
+	return true;
+}
+
+bool RtcSession::VideoIsEnabled()
+{
+	return _video_enabled;
+}
+
+bool RtcSession::EnableAudio(bool enable)
+{
+	bool updated = enable != _audio_enabled;
+	_audio_enabled = enable;
+	if (updated) {
+		SendSessionChanged();
+	}
+	return true;
+}
+
+bool RtcSession::AudioIsEnabled()
+{
+	return _audio_enabled;
+}
+
+bool RtcSession::SendSessionChanged() const
+{
+	auto ws_response = std::static_pointer_cast<http::svr::ws::WebSocketResponse>(_ws_session->GetResponse());
+	if(ws_response == nullptr)
+	{
+		logte("Failed to get the websocket response");
+		return false;
+	}
+
+	Json::Value json_response;
+
+	json_response["command"] = "notification";
+	json_response["type"] = "session_changed";
+	
+	// Message
+	Json::Value json_message;
+	
+	json_message["video"] = _video_enabled;
+	json_message["audio"] = _audio_enabled;
+
+	json_response["message"] = json_message;
+
+	return ws_response->Send(json_response) > 0;
+}
+
+
 void RtcSession::OnMessageReceived(const std::any &message)
 {
 	//It must not be called during start and stop.
@@ -452,6 +509,19 @@ bool RtcSession::IsSelectedPacket(const std::shared_ptr<const RtpPacket> &rtp_pa
 	change_lock.lock();
 	auto current_rendition = _current_rendition;
 	change_lock.unlock();
+
+	// Check if video is enabled
+	if (rtp_packet->IsVideoPacket() && !_video_enabled)
+	{
+		return false;
+	} 
+	
+	// Check if audio is enabled
+	if (!rtp_packet->IsVideoPacket() && !_audio_enabled)
+	{
+		return false;
+	}
+
 
 	// Select Track for ABR
 	auto selected_track = rtp_packet->IsVideoPacket() ? current_rendition->GetVideoTrack() : current_rendition->GetAudioTrack();

@@ -49,4 +49,9 @@ public:
 							   const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
 							   const std::shared_ptr<const SessionDescription> &offer_sdp,
 							   const std::shared_ptr<const SessionDescription> &answer_sdp) = 0;
+
+	virtual	bool OnSessionUpdate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+					   bool change_video_state, bool &enable_video, bool change_audio_state, bool &enable_audio,
+					   const std::shared_ptr<const SessionDescription> &offer_sdp,
+					   const std::shared_ptr<const SessionDescription> &answer_sdp) { return false; }
 };

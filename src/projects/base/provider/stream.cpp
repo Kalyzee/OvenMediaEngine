@@ -76,6 +76,11 @@ namespace pvd
 		return true;
 	}
 
+	bool Stream::OnStreamPrepared(bool inbound)
+	{
+		return true;
+	}
+
 	// Consider the reconnection time and add it to the base timestamp
 	void Stream::UpdateReconnectTimeToBasetime()
 	{

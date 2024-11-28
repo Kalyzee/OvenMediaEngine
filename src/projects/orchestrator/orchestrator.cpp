@@ -679,8 +679,13 @@ namespace ocst
 	bool Orchestrator::OnStreamPrepared(const info::Application &app_info, const std::shared_ptr<info::Stream> &info)
 	{
 		logtd("%s/%s stream of %s is parsed", app_info.GetVHostAppName().CStr(), info->GetName().CStr(), info->IsInputStream() ? "inbound" : "outbound");
-
-		return true;
+		auto stream = GetProviderStream(app_info.GetVHostAppName(), info->GetName());
+		if (stream == nullptr)
+		{
+			// Error
+			return false;
+		}
+		return stream->OnStreamPrepared(info->IsInputStream());
 	}
 
 	bool Orchestrator::OnStreamUpdated(const info::Application &app_info, const std::shared_ptr<info::Stream> &info)

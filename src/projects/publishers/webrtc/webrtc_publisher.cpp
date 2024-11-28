@@ -526,6 +526,71 @@ bool WebRtcPublisher::OnChangeRendition(const std::shared_ptr<http::svr::ws::Web
 	return true;
 }
 
+bool WebRtcPublisher::OnSessionUpdate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+										bool change_video_state, bool &enable_video, bool change_audio_state, bool &enable_audio,
+										const std::shared_ptr<const SessionDescription> &offer_sdp,
+										const std::shared_ptr<const SessionDescription> &peer_sdp)
+{
+	auto [autorized_exist, authorized] = ws_session->GetUserData("authorized");
+	ov::String uri;
+	if (autorized_exist == true && std::holds_alternative<bool>(authorized) == true && std::get<bool>(authorized) == true)
+	{
+		auto [final_url_exist, final_url] = ws_session->GetUserData("final_url");
+		if (final_url_exist == true && std::holds_alternative<ov::String>(final_url) == true)
+		{
+			uri = std::get<ov::String>(final_url);
+		}
+		else
+		{
+			return false;
+		}
+	}
+	else
+	{
+		// This client was unauthoized when request offer situation
+		return false;
+	}
+
+	auto parsed_url = ov::Url::Parse(uri);
+	if (parsed_url == nullptr)
+	{
+		logte("Could not parse the url: %s", uri.CStr());
+		return false;
+	}
+
+	auto final_vhost_app_name = ocst::Orchestrator::GetInstance()->ResolveApplicationNameFromDomain(parsed_url->Host(), parsed_url->App());
+	auto final_stream_name = parsed_url->Stream();
+
+	logtd("ChangeRendition command received : %s/%s/%u", final_vhost_app_name.CStr(), final_stream_name.CStr(), offer_sdp->GetSessionId());
+
+	// Find Stream
+	auto stream = std::static_pointer_cast<RtcStream>(GetStream(final_vhost_app_name, final_stream_name));
+	if (!stream)
+	{
+		logte("Session(%u) update failed. Cannot find stream (%s/%s)", offer_sdp->GetSessionId(), final_vhost_app_name.CStr(), final_stream_name.CStr());
+		return false;
+	}
+
+	auto session = std::static_pointer_cast<RtcSession>(stream->GetSession(offer_sdp->GetSessionId()));
+	if (session == nullptr)
+	{
+		logte("Session(%u) update failed. Cannot find session by offer sdp session id", offer_sdp->GetSessionId());
+		return false;
+	}
+
+	if (change_video_state == true)
+	{
+		session->EnableVideo(enable_video);
+	}
+
+	if (change_audio_state == true)
+	{
+		session->EnableAudio(enable_audio);
+	}
+
+	return true;
+}
+
 bool WebRtcPublisher::OnStopCommand(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
 									const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
 									const std::shared_ptr<const SessionDescription> &offer_sdp,

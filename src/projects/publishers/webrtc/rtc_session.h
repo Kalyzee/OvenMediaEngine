@@ -74,6 +74,12 @@ public:
 	bool RequestChangeRendition(SwitchOver switch_over);
 	bool SetAutoAbr(bool auto_abr);
 
+	bool EnableVideo(bool enable);
+	bool VideoIsEnabled();
+
+	bool EnableAudio(bool enable);
+	bool AudioIsEnabled();
+
 	void SetSessionExpiredTime(uint64_t expired_time);
 
 	const std::shared_ptr<const SessionDescription>& GetPeerSDP() const;
@@ -110,6 +116,7 @@ private:
 	
 	bool SendPlaylistInfo(const std::shared_ptr<const RtcPlaylist> &playlist) const;
 	bool SendRenditionChanged(const std::shared_ptr<const RtcRendition> &rendition) const;
+	bool SendSessionChanged() const;
 
 	std::shared_ptr<WebRtcPublisher>	_publisher;
 
@@ -147,6 +154,9 @@ private:
 	uint16_t _video_rtp_sequence_number = 0;
 	uint16_t _audio_rtp_sequence_number = 0;
 	uint16_t _wide_sequence_number = 0;
+
+	bool _video_enabled = true;
+	bool _audio_enabled = true;
 
 	ov::StopWatch _abr_test_watch;
 	bool _changed = false;

@@ -22,9 +22,10 @@ namespace pvd
 													   const std::shared_ptr<const SessionDescription> &remote_sdp,
 													   const std::shared_ptr<Certificate> &certificate,
 													   const std::shared_ptr<IcePort> &ice_port,
-													   session_id_t ice_session_id)
+													   session_id_t ice_session_id,
+														 const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
 	{
-		auto stream = std::make_shared<WebRTCStream>(source_type, stream_name, provider, local_sdp, remote_sdp, certificate, ice_port, ice_session_id);
+		auto stream = std::make_shared<WebRTCStream>(source_type, stream_name, provider, local_sdp, remote_sdp, certificate, ice_port, ice_session_id, ws_session);
 		if (stream != nullptr)
 		{
 			if (stream->Start() == false)
@@ -41,7 +42,8 @@ namespace pvd
 							   const std::shared_ptr<const SessionDescription> &remote_sdp,
 							   const std::shared_ptr<Certificate> &certificate,
 							   const std::shared_ptr<IcePort> &ice_port,
-							   session_id_t ice_session_id)
+							   session_id_t ice_session_id,
+								 const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
 		: PushStream(source_type, stream_name, provider), Node(NodeType::Edge)
 	{
 		_local_sdp = local_sdp;
@@ -62,6 +64,7 @@ namespace pvd
 		_certificate = certificate;
 		_session_key = ov::Random::GenerateString(8);
 		_ice_session_id = ice_session_id;
+		_ws_session = ws_session;
 
 		_h264_bitstream_parser.SetConfig(H264BitstreamParser::Config{._parse_slice_type = true});
 	}
@@ -339,6 +342,35 @@ namespace pvd
 		ov::Node::Stop();
 
 		return pvd::Stream::Stop();
+	}
+
+	bool WebRTCStream::OnStreamPrepared(bool inbound) 
+	{
+		// If stream is prepared in outbound, send ready Stream has been prepared 
+		if (!inbound && _ws_session != nullptr) 
+		{
+			auto ws_response = std::static_pointer_cast<http::svr::ws::WebSocketResponse>(_ws_session->GetResponse());
+			if(ws_response == nullptr)
+			{
+				logte("Failed to get the websocket response");
+			} 
+			else 
+			{
+				Json::Value json_response;
+
+				json_response["command"] = "notification";
+				json_response["type"] = "ready";
+				auto res = ws_response->Send(json_response) > 0;
+				if(!ws_response)
+				{
+					logte("Failed to send websocket message");
+				}
+			}
+
+
+
+		}
+		return pvd::Stream::OnStreamPrepared(inbound);
 	}
 
 	std::shared_ptr<const SessionDescription> WebRTCStream::GetLocalSDP()

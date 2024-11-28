@@ -640,6 +640,10 @@ std::shared_ptr<const ov::Error> RtcSignallingServer::DispatchCommand(const std:
 	{
 		return DispatchStop(ws_session, info);
 	}
+	else if (command == "session")
+	{
+		return DispatchUpdateSession(ws_session, object, info);
+	}
 
 	// Unknown command
 	return std::make_shared<http::HttpError>(http::StatusCode::BadRequest, "Unknown command: %s", command.CStr());
@@ -942,6 +946,39 @@ std::shared_ptr<const ov::Error> RtcSignallingServer::DispatchChangeRendition(co
 		for (auto &observer : _observers)
 		{
 			if (observer->OnChangeRendition(ws_session, has_rendition_name, rendition_name, has_auto_abr, auto_abr, info->offer_sdp, info->answer_sdp) == false)
+			{
+				return std::make_shared<http::HttpError>(http::StatusCode::Forbidden, "Forbidden");
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+std::shared_ptr<const ov::Error> RtcSignallingServer::DispatchUpdateSession(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session, const ov::JsonObject &object, std::shared_ptr<RtcSignallingInfo> &info)
+{
+	auto has_video_state = object.IsMember("video");
+	auto has_audio_state = object.IsMember("audio");
+
+
+	bool video_state = false;
+	bool audio_state = false;
+
+	if (has_video_state)
+	{
+		video_state = object.GetBoolValue("video");
+	}
+
+	if (has_audio_state)
+	{
+		audio_state = object.GetBoolValue("audio");
+	}
+
+	if (info->answer_sdp != nullptr)
+	{
+		for (auto &observer : _observers)
+		{
+			if (observer->OnSessionUpdate(ws_session, has_video_state, video_state, has_audio_state, audio_state, info->offer_sdp, info->answer_sdp) == false)
 			{
 				return std::make_shared<http::HttpError>(http::StatusCode::Forbidden, "Forbidden");
 			}
