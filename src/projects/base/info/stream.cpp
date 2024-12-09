@@ -57,6 +57,7 @@ namespace info
 
 		_playlists = stream._playlists;
 		_representation_type = stream._representation_type;
+		_from_origin_map_store = stream._from_origin_map_store;
 	}
 
 	Stream::Stream(StreamSourceType source)
