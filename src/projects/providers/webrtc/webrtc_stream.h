@@ -34,7 +34,8 @@ namespace pvd
 													const std::shared_ptr<Certificate> &certificate, 
 													const std::shared_ptr<IcePort> &ice_port,
 													session_id_t ice_session_id,
-													const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session);
+													const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+													const http::svr::ws::ws_session_info_id ws_session_info_id);
 		
 		explicit WebRTCStream(StreamSourceType source_type, ov::String stream_name, 
 								const std::shared_ptr<PushProvider> &provider,
@@ -43,7 +44,8 @@ namespace pvd
 								const std::shared_ptr<Certificate> &certificate, 
 								const std::shared_ptr<IcePort> &ice_port,
 								session_id_t ice_session_id,
-								const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session);
+								const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+								const http::svr::ws::ws_session_info_id ws_session_info_id);
 		~WebRTCStream() final;
 
 		bool Start() override;
@@ -118,6 +120,8 @@ namespace pvd
 
 		session_id_t _ice_session_id = 0;
 
-		std::shared_ptr<http::svr::ws::WebSocketSession> 	_ws_session; // Signalling  
+		// Signalling  
+		std::shared_ptr<http::svr::ws::WebSocketSession> 	_ws_session; 
+		http::svr::ws::ws_session_info_id 	_ws_session_info_id;
 	};
 }

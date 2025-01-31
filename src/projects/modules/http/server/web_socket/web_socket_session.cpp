@@ -33,21 +33,54 @@ namespace http
 				_ws_response = std::make_shared<WebSocketResponse>(exchange->GetResponse());
 			}
 
-			void WebSocketSession::AddUserData(ov::String key, std::variant<bool, uint64_t, ov::String> value)
+			bool WebSocketSession::AddClient(std::shared_ptr<WebSocketSession::WebSocketSesssionInfo> client)
 			{
-				_data_map.emplace(key, value);
-			}
-
-			std::tuple<bool, std::variant<bool, uint64_t, ov::String>> WebSocketSession::GetUserData(ov::String key)
-			{
-				if (_data_map.find(key) == _data_map.end())
+				auto lock_guard = std::lock_guard(_client_list_mutex);
+				if (multiple_clients == false && _client_list.size() >= 1)
 				{
-					return {false, false};
+					return false;
 				}
-
-				return {true, _data_map[key]};
+				_client_list[client->id] = client;
+				return true;
 			}
 
+			std::shared_ptr<WebSocketSession::WebSocketSesssionInfo> WebSocketSession::GetFirstClient()
+			{
+				auto lock_guard = std::lock_guard(_client_list_mutex);
+				auto it = _client_list.begin();
+				if (it == _client_list.end())
+				{
+					return nullptr;
+				}
+				return it->second;
+			}
+
+			std::shared_ptr<WebSocketSession::WebSocketSesssionInfo> WebSocketSession::GetClient(ws_session_info_id id)
+			{
+				auto lock_guard = std::lock_guard(_client_list_mutex);
+				auto it = _client_list.find(id);
+				if (it == _client_list.end())
+				{
+					return nullptr;
+				}
+				return it->second;
+			}
+
+			std::vector<std::shared_ptr<WebSocketSession::WebSocketSesssionInfo>> WebSocketSession::GetClients()
+			{
+				std::vector<std::shared_ptr<WebSocketSession::WebSocketSesssionInfo>> clients;
+				for (const auto &pair : _client_list)
+				{
+					clients.push_back(pair.second);
+				}
+				return clients;
+			}
+
+			void WebSocketSession::DeleteClient(ws_session_info_id id)
+			{
+				auto lock_guard = std::lock_guard(_client_list_mutex);
+				_client_list.erase(id);
+			}
 
 			// Go Upgrade
 			bool WebSocketSession::Upgrade()
@@ -142,5 +175,5 @@ namespace http
 				return true;
 			}
 		}  // namespace ws
-	}	   // namespace svr
+	}  // namespace svr
 }  // namespace http

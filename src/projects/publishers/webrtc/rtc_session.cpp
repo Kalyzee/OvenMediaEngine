@@ -28,11 +28,12 @@ std::shared_ptr<RtcSession> RtcSession::Create(const std::shared_ptr<WebRtcPubli
                                                const std::shared_ptr<const SessionDescription> &peer_sdp,
                                                const std::shared_ptr<IcePort> &ice_port,
 											   session_id_t ice_session_id,
-											   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
+											   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+												 const http::svr::ws::ws_session_info_id ws_session_info_id)
 {
 	// Session Id of the offer sdp is unique value
 	auto session_info = info::Session(*std::static_pointer_cast<info::Stream>(stream), offer_sdp->GetSessionId());
-	auto session = std::make_shared<RtcSession>(session_info, publisher, application, stream, file_name, offer_sdp, peer_sdp, ice_port, ice_session_id, ws_session);
+	auto session = std::make_shared<RtcSession>(session_info, publisher, application, stream, file_name, offer_sdp, peer_sdp, ice_port, ice_session_id, ws_session, ws_session_info_id);
 	if(!session->Start())
 	{
 		return nullptr;
@@ -49,7 +50,8 @@ RtcSession::RtcSession(const info::Session &session_info,
 					   const std::shared_ptr<const SessionDescription> &peer_sdp,
 					   const std::shared_ptr<IcePort> &ice_port,
 					   session_id_t ice_session_id,
-					   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
+					   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+						 const http::svr::ws::ws_session_info_id ws_session_info_id)
 	: Session(session_info, application, stream), Node(NodeType::Edge)
 {
 	_publisher = publisher;
@@ -58,6 +60,7 @@ RtcSession::RtcSession(const info::Session &session_info,
 	_ice_port = ice_port;
 	_ice_session_id = ice_session_id;
 	_ws_session = ws_session;
+	_ws_session_info_id = ws_session_info_id;
 	_file_name = file_name;
 }
 
@@ -328,7 +331,8 @@ bool RtcSession::SendPlaylistInfo(const std::shared_ptr<const RtcPlaylist> &play
 
 	json_response["command"] = "notification";
 	json_response["type"] = "playlist";
-	
+	json_response["id"] = _ws_session_info_id;
+
 	// Message
 	json_response["message"] = playlist->ToJson(_auto_abr);
 
@@ -348,6 +352,7 @@ bool RtcSession::SendRenditionChanged(const std::shared_ptr<const RtcRendition> 
 
 	json_response["command"] = "notification";
 	json_response["type"] = "rendition_changed";
+	json_response["id"] = _ws_session_info_id;
 	
 	// Message
 	Json::Value json_message;
@@ -403,6 +408,7 @@ bool RtcSession::SendSessionChanged() const
 
 	json_response["command"] = "notification";
 	json_response["type"] = "session_changed";
+	json_response["id"] = _ws_session_info_id;
 	
 	// Message
 	Json::Value json_message;

@@ -35,29 +35,31 @@ public:
 
 	// SignallingObserver Implementation
 	std::shared_ptr<const SessionDescription> OnRequestOffer(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-															 const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+															 const http::svr::ws::ws_session_info_id ws_session_info_id,
 															 std::vector<RtcIceCandidate> *ice_candidates, bool &tcp_relay) override;
 	bool OnAddRemoteDescription(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-								const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+								const http::svr::ws::ws_session_info_id ws_session_info_id,
 								const std::shared_ptr<const SessionDescription> &offer_sdp,
 								const std::shared_ptr<const SessionDescription> &answer_sdp) override;
 
 	bool OnChangeRendition(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-						   bool change_rendition, const ov::String &rendition_name, bool change_auto, bool &auto_abr,
+						   const http::svr::ws::ws_session_info_id ws_session_info_id,
+							 bool change_rendition, const ov::String &rendition_name, bool change_auto, bool &auto_abr,
 						   const std::shared_ptr<const SessionDescription> &offer_sdp,
 						   const std::shared_ptr<const SessionDescription> &answer_sdp) override;
 
 	bool OnIceCandidate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-						const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+						const http::svr::ws::ws_session_info_id ws_session_info_id,
 						const std::shared_ptr<RtcIceCandidate> &candidate,
 						const ov::String &username_fragment) override;
 
 	bool OnStopCommand(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-					   const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+					   const http::svr::ws::ws_session_info_id ws_session_info_id,
 					   const std::shared_ptr<const SessionDescription> &offer_sdp,
 					   const std::shared_ptr<const SessionDescription> &answer_sdp) override;
 
 	bool OnSessionUpdate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+						 const http::svr::ws::ws_session_info_id ws_session_info_id,
 					   bool change_video_state, bool &enable_video, bool change_audio_state, bool &enable_audio,
 					   const std::shared_ptr<const SessionDescription> &offer_sdp,
 					   const std::shared_ptr<const SessionDescription> &answer_sdp) override;

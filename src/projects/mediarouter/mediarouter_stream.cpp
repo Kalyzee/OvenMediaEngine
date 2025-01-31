@@ -925,10 +925,14 @@ bool MediaRouteStream::AreAllTracksReady()
 		}
 
 		// If the track is an outbound track, it is necessary to check the quality.
+		/*
+		* Ignore this to pull stream more quickly
+		* From web, receiving the stream takes 1 second less
 		if (track->HasQualityMeasured() == false)
 		{
 			return false;
 		}
+		*/
 	}
 
 	_are_all_tracks_parsed = true;

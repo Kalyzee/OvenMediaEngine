@@ -23,9 +23,10 @@ namespace pvd
 													   const std::shared_ptr<Certificate> &certificate,
 													   const std::shared_ptr<IcePort> &ice_port,
 													   session_id_t ice_session_id,
-														 const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
+														 const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+														 const http::svr::ws::ws_session_info_id ws_session_info_id)
 	{
-		auto stream = std::make_shared<WebRTCStream>(source_type, stream_name, provider, local_sdp, remote_sdp, certificate, ice_port, ice_session_id, ws_session);
+		auto stream = std::make_shared<WebRTCStream>(source_type, stream_name, provider, local_sdp, remote_sdp, certificate, ice_port, ice_session_id, ws_session, ws_session_info_id);
 		if (stream != nullptr)
 		{
 			if (stream->Start() == false)
@@ -43,7 +44,8 @@ namespace pvd
 							   const std::shared_ptr<Certificate> &certificate,
 							   const std::shared_ptr<IcePort> &ice_port,
 							   session_id_t ice_session_id,
-								 const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
+								 const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+								 const http::svr::ws::ws_session_info_id ws_session_info_id)
 		: PushStream(source_type, stream_name, provider), Node(NodeType::Edge)
 	{
 		_local_sdp = local_sdp;
@@ -65,6 +67,7 @@ namespace pvd
 		_session_key = ov::Random::GenerateString(8);
 		_ice_session_id = ice_session_id;
 		_ws_session = ws_session;
+		_ws_session_info_id = ws_session_info_id;
 
 		_h264_bitstream_parser.SetConfig(H264BitstreamParser::Config{._parse_slice_type = true});
 	}
@@ -360,15 +363,13 @@ namespace pvd
 
 				json_response["command"] = "notification";
 				json_response["type"] = "ready";
+				json_response["id"] = _ws_session_info_id;
 				auto res = ws_response->Send(json_response) > 0;
-				if(!ws_response)
+				if(!res)
 				{
 					logte("Failed to send websocket message");
 				}
 			}
-
-
-
 		}
 		return pvd::Stream::OnStreamPrepared(inbound);
 	}
@@ -458,15 +459,20 @@ namespace pvd
 				return;
 		}
 
-		int64_t adjusted_timestamp;
-		if (AdjustRtpTimestamp(first_rtp_packet->Ssrc(), first_rtp_packet->Timestamp(), std::numeric_limits<uint32_t>::max(), adjusted_timestamp) == false)
+		int64_t adjusted_timestamp = 0;
+		bool timestamp_is_adjusted = AdjustRtpTimestamp(first_rtp_packet->Ssrc(), first_rtp_packet->Timestamp(), std::numeric_limits<uint32_t>::max(), adjusted_timestamp);
+		/*
+		* Ignore this to push stream more quickly
+		* From web, receiving the pushed stream takes 2/3 seconds less
+		if (timestamp_is_adjusted == false)
 		{
-			logtd("not yet received sr packet : %u", first_rtp_packet->Ssrc());
+			ogtd("not yet received sr packet : %u", first_rtp_packet->Ssrc());
 			// Prevents the stream from being deleted because there is no input data
-			MonitorInstance->IncreaseBytesIn(*Stream::GetSharedPtr(), bitstream->GetLength());
+			// MonitorInstance->IncreaseBytesIn(*Stream::GetSharedPtr(), bitstream->GetLength());
 			return;
 		}
-		
+		*/
+
 		int64_t dts = adjusted_timestamp;
 		if (cts_enabled == true)
 		{
