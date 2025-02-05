@@ -43,7 +43,7 @@ namespace http
 
 				size_t length = (data == nullptr) ? 0LL : data->GetLength();
 
-				if (length < 0x7D)
+				if (length <= 0x7D)
 				{
 					// frame-payload-length    = ( %x00-7D )
 					//                         / ( %x7E frame-payload-length-16 )
