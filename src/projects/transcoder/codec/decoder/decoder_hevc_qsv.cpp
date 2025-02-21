@@ -18,7 +18,7 @@ bool DecoderHEVCxQSV::Configure(std::shared_ptr<MediaTrack> context)
 		return false;
 	}
 
-	const AVCodec *_codec = ::avcodec_find_decoder_by_name("h265_qsv");
+	const AVCodec *_codec = ::avcodec_find_decoder_by_name("hevc_qsv");
 	if (_codec == nullptr)
 	{
 		logte("Codec not found: %s (%d)", ::avcodec_get_name(GetCodecID()), GetCodecID());
@@ -194,7 +194,7 @@ void DecoderHEVCxQSV::CodecThread()
 					{
 						auto codec_info = ffmpeg::Conv::CodecInfoToString(_context, _codec_par);
 						logti("[%s/%s(%u)] input stream information: %s",
-							  _stream_info.GetApplicationInfo().GetName().CStr(), _stream_info.GetName().CStr(), _stream_info.GetId(), codec_info.CStr());
+							  _stream_info.GetApplicationInfo().GetVHostAppName().CStr(), _stream_info.GetName().CStr(), _stream_info.GetId(), codec_info.CStr());
 
 						_change_format = true;
 
@@ -220,7 +220,7 @@ void DecoderHEVCxQSV::CodecThread()
 					continue;
 				}
 
-				SendOutputBuffer(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
+				Complete(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
 			}
 		}
 	}

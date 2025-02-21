@@ -14,6 +14,7 @@
 #include "monitoring/monitoring.h"
 
 #include <base/mediarouter/media_buffer.h>
+#include <base/mediarouter/media_event.h>
 #include <base/mediarouter/mediarouter_interface.h>
 
 namespace pvd
@@ -64,13 +65,18 @@ namespace pvd
 		virtual bool Stop();
 		virtual bool Terminate();
 
-		bool SendDataFrame(int64_t timestamp, const cmn::BitstreamFormat &format, const cmn::PacketType &packet_type, const std::shared_ptr<ov::Data> &frame);
+		bool SendDataFrame(int64_t timestamp, const cmn::BitstreamFormat &format, const cmn::PacketType &packet_type, const std::shared_ptr<ov::Data> &frame, bool urgent);
+
+		// Provider can override this function to handle the event if needed.
+		virtual bool SendEvent(const std::shared_ptr<MediaEvent> &event);
 
 		std::shared_ptr<ov::Url> GetRequestedUrl() const;
 		void SetRequestedUrl(const std::shared_ptr<ov::Url> &requested_url);
 
 		std::shared_ptr<ov::Url> GetFinalUrl() const;
 		void SetFinalUrl(const std::shared_ptr<ov::Url> &final_url);
+
+		virtual bool OnStreamPrepared(bool inbound);
 
 	protected:
 		Stream(const std::shared_ptr<pvd::Application> &application, StreamSourceType source_type);

@@ -46,7 +46,9 @@ namespace cmn
 
 		HVCC, // H.265 HVCC
 
-		MP3
+		MP3,
+
+		OVEN_EVENT // OvenMediaEngine defined event
 	};
 
 	enum class PacketType : int8_t
@@ -110,11 +112,18 @@ namespace cmn
 		NB
 	};
 
+	enum class KeyFrameIntervalType : uint8_t
+	{
+		FRAME = 0,
+		TIME
+	};
+
 	static bool IsVideoCodec(cmn::MediaCodecId codec_id)
 	{
 		if (codec_id == cmn::MediaCodecId::H264 ||
 			codec_id == cmn::MediaCodecId::H265 ||
 			codec_id == cmn::MediaCodecId::Vp8 ||
+			codec_id == cmn::MediaCodecId::Vp9 ||
 			codec_id == cmn::MediaCodecId::Flv ||
 			codec_id == cmn::MediaCodecId::Vp9)
 		{
@@ -222,6 +231,8 @@ namespace cmn
 				return "PNG";
 			case cmn::BitstreamFormat::ID3v2:
 				return "ID3v2";
+			case cmn::BitstreamFormat::OVEN_EVENT:
+				return "OVEN_EVENT";
 			default:
 				return "Unknown";
 		}
@@ -319,7 +330,7 @@ namespace cmn
 		return false;
 	}
 
-	static ov::String GetStringFromCodecId(cmn::MediaCodecId id)
+	static ov::String GetCodecIdToString(cmn::MediaCodecId id)
 	{
 		switch (id)
 		{
@@ -407,6 +418,35 @@ namespace cmn
 		}
 
 		return cmn::MediaCodecId::None;
+	}
+
+	static ov::String GetKeyFrameIntervalTypeToString(cmn::KeyFrameIntervalType type)
+	{
+		switch (type)
+		{
+			case cmn::KeyFrameIntervalType::FRAME:
+				return "frame";
+			case cmn::KeyFrameIntervalType::TIME:
+				return "time";
+			default:
+				return "unknown";
+		}
+	}
+
+	static cmn::KeyFrameIntervalType GetKeyFrameIntervalTypeByName(ov::String type)
+	{
+		type.MakeLower();
+
+		if (type == "frame")
+		{
+			return cmn::KeyFrameIntervalType::FRAME;
+		}
+		else if (type == "time")
+		{
+			return cmn::KeyFrameIntervalType::TIME;
+		}
+
+		return cmn::KeyFrameIntervalType::FRAME;
 	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////

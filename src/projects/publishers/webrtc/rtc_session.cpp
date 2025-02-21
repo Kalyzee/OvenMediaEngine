@@ -28,11 +28,12 @@ std::shared_ptr<RtcSession> RtcSession::Create(const std::shared_ptr<WebRtcPubli
                                                const std::shared_ptr<const SessionDescription> &peer_sdp,
                                                const std::shared_ptr<IcePort> &ice_port,
 											   session_id_t ice_session_id,
-											   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
+											   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+												 const http::svr::ws::ws_session_info_id ws_session_info_id)
 {
 	// Session Id of the offer sdp is unique value
 	auto session_info = info::Session(*std::static_pointer_cast<info::Stream>(stream), offer_sdp->GetSessionId());
-	auto session = std::make_shared<RtcSession>(session_info, publisher, application, stream, file_name, offer_sdp, peer_sdp, ice_port, ice_session_id, ws_session);
+	auto session = std::make_shared<RtcSession>(session_info, publisher, application, stream, file_name, offer_sdp, peer_sdp, ice_port, ice_session_id, ws_session, ws_session_info_id);
 	if(!session->Start())
 	{
 		return nullptr;
@@ -49,7 +50,8 @@ RtcSession::RtcSession(const info::Session &session_info,
 					   const std::shared_ptr<const SessionDescription> &peer_sdp,
 					   const std::shared_ptr<IcePort> &ice_port,
 					   session_id_t ice_session_id,
-					   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session)
+					   const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+						 const http::svr::ws::ws_session_info_id ws_session_info_id)
 	: Session(session_info, application, stream), Node(NodeType::Edge)
 {
 	_publisher = publisher;
@@ -58,6 +60,7 @@ RtcSession::RtcSession(const info::Session &session_info,
 	_ice_port = ice_port;
 	_ice_session_id = ice_session_id;
 	_ws_session = ws_session;
+	_ws_session_info_id = ws_session_info_id;
 	_file_name = file_name;
 }
 
@@ -155,7 +158,7 @@ bool RtcSession::Start()
 																				CodecIdFromPayloadTypeNumber(_audio_payload_type));
 	if (_playlist == nullptr)
 	{
-		logte("Failed to get the playlist (%s/%s/%s) because there is no available rendition", GetApplication()->GetName().CStr(), GetStream()->GetName().CStr(), _file_name.CStr());
+		logte("Failed to get the playlist (%s/%s/%s) because there is no available rendition", GetApplication()->GetVHostAppName().CStr(), GetStream()->GetName().CStr(), _file_name.CStr());
 		return false;
 	}
 
@@ -169,6 +172,7 @@ bool RtcSession::Start()
 
 	SendPlaylistInfo(_playlist);
 	SendRenditionChanged(_current_rendition);
+	SendSessionChanged();
 
 	logtd("Video PT(%d) Audio PT(%d) Video TrackID(%u) Audio TrackID(%u)", _video_payload_type, _audio_payload_type, 
 														current_video_track ? current_video_track->GetId() : -1,
@@ -327,7 +331,8 @@ bool RtcSession::SendPlaylistInfo(const std::shared_ptr<const RtcPlaylist> &play
 
 	json_response["command"] = "notification";
 	json_response["type"] = "playlist";
-	
+	json_response["id"] = _ws_session_info_id;
+
 	// Message
 	json_response["message"] = playlist->ToJson(_auto_abr);
 
@@ -347,6 +352,7 @@ bool RtcSession::SendRenditionChanged(const std::shared_ptr<const RtcRendition> 
 
 	json_response["command"] = "notification";
 	json_response["type"] = "rendition_changed";
+	json_response["id"] = _ws_session_info_id;
 	
 	// Message
 	Json::Value json_message;
@@ -358,6 +364,63 @@ bool RtcSession::SendRenditionChanged(const std::shared_ptr<const RtcRendition> 
 
 	return ws_response->Send(json_response) > 0;
 }
+
+bool RtcSession::EnableVideo(bool enable)
+{
+	bool updated = enable != _video_enabled;
+	_video_enabled = enable;
+	if (updated) {
+		SendSessionChanged();
+	}
+	return true;
+}
+
+bool RtcSession::VideoIsEnabled()
+{
+	return _video_enabled;
+}
+
+bool RtcSession::EnableAudio(bool enable)
+{
+	bool updated = enable != _audio_enabled;
+	_audio_enabled = enable;
+	if (updated) {
+		SendSessionChanged();
+	}
+	return true;
+}
+
+bool RtcSession::AudioIsEnabled()
+{
+	return _audio_enabled;
+}
+
+bool RtcSession::SendSessionChanged() const
+{
+	auto ws_response = std::static_pointer_cast<http::svr::ws::WebSocketResponse>(_ws_session->GetResponse());
+	if(ws_response == nullptr)
+	{
+		logte("Failed to get the websocket response");
+		return false;
+	}
+
+	Json::Value json_response;
+
+	json_response["command"] = "notification";
+	json_response["type"] = "session_changed";
+	json_response["id"] = _ws_session_info_id;
+	
+	// Message
+	Json::Value json_message;
+	
+	json_message["video"] = _video_enabled;
+	json_message["audio"] = _audio_enabled;
+
+	json_response["message"] = json_message;
+
+	return ws_response->Send(json_response) > 0;
+}
+
 
 void RtcSession::OnMessageReceived(const std::any &message)
 {
@@ -452,6 +515,19 @@ bool RtcSession::IsSelectedPacket(const std::shared_ptr<const RtpPacket> &rtp_pa
 	change_lock.lock();
 	auto current_rendition = _current_rendition;
 	change_lock.unlock();
+
+	// Check if video is enabled
+	if (rtp_packet->IsVideoPacket() && !_video_enabled)
+	{
+		return false;
+	} 
+	
+	// Check if audio is enabled
+	if (!rtp_packet->IsVideoPacket() && !_audio_enabled)
+	{
+		return false;
+	}
+
 
 	// Select Track for ABR
 	auto selected_track = rtp_packet->IsVideoPacket() ? current_rendition->GetVideoTrack() : current_rendition->GetAudioTrack();

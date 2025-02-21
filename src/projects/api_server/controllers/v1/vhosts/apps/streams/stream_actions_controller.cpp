@@ -25,6 +25,8 @@ namespace api
 			RegisterPost(R"((startHlsDump))", &StreamActionsController::OnPostStartHLSDump);
 			RegisterPost(R"((stopHlsDump))", &StreamActionsController::OnPostStopHLSDump);
 			RegisterPost(R"((sendEvent))", &StreamActionsController::OnPostSendEvent);
+
+			RegisterPost(R"((concludeHlsLive))", &StreamActionsController::OnPostConcludeHlsLive);
 		}
 
 		// POST /v1/vhosts/<vhost_name>/apps/<app_name>/streams/<stream_name>:hlsDumps
@@ -43,7 +45,7 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::BadRequest,
 									  "Could not parse json context: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), stream->GetName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
 			}
 
 			if (dump_info->GetStreamName().IsEmpty() == true)
@@ -60,16 +62,16 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									  "Could not find output stream: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
 			}
 
 			auto output_stream = *output_stream_it;
-			auto llhls_stream = GetLLHlsStream(output_stream);
+			auto llhls_stream = GetOutputStream<LLHlsStream>(output_stream, PublisherType::LLHls);
 			if (llhls_stream == nullptr)
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									  "Could not find LLHLS stream: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
 			}
 
 			Json::Value response = Json::Value(Json::arrayValue);
@@ -118,7 +120,7 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::BadRequest,
 									  "Could not parse json context: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), stream->GetName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
 			}
 
 			if (dump_info->GetId().IsEmpty() == true || 
@@ -137,16 +139,16 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									  "Could not find output stream: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
 			}
 
 			auto output_stream = *output_stream_it;
-			auto llhls_stream = GetLLHlsStream(output_stream);
+			auto llhls_stream = GetOutputStream<LLHlsStream>(output_stream, PublisherType::LLHls);
 			if (llhls_stream == nullptr)
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									  "Could not find LLHLS stream: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
 			}
 
 			auto [result, reason] = llhls_stream->StartDump(dump_info);
@@ -154,7 +156,7 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::InternalServerError,
 									  "Could not start dump: [%s/%s/%s] (%s)",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr(), reason.CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr(), reason.CStr());
 			}
 
 			return {http::StatusCode::OK};
@@ -176,7 +178,7 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::BadRequest,
 									  "Could not parse json context: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), stream->GetName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
 			}
 
 			if (dump_info->GetStreamName().IsEmpty() == true)
@@ -193,16 +195,16 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									  "Could not find output stream: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
 			}
 
 			auto output_stream = *output_stream_it;
-			auto llhls_stream = GetLLHlsStream(output_stream);
+			auto llhls_stream = GetOutputStream<LLHlsStream>(output_stream, PublisherType::LLHls);
 			if (llhls_stream == nullptr)
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									  "Could not find LLHLS stream: [%s/%s/%s]",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr());
 			}
 
 			auto [result, reason] = llhls_stream->StopDump(dump_info);
@@ -210,7 +212,7 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::InternalServerError,
 									  "Could not stop dump: [%s/%s/%s] (%s)",
-									  vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), dump_info->GetStreamName().CStr(), reason.CStr());
+									  vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), dump_info->GetStreamName().CStr(), reason.CStr());
 			}
 
 			return {http::StatusCode::OK};
@@ -227,6 +229,7 @@ namespace api
 			// {
 			//   "eventFormat": "id3v2",
 			//   "eventType": "video",
+			//	 "urgent": false,
 			//   "events":[
 			//       {
 			//         "frameType": "TXXX",
@@ -235,6 +238,11 @@ namespace api
 			//       },
 			//       {
 			//         "frameType": "TXXX",
+			//         "info": "AirenSoft",
+			//         "data": "OvenMediaEngine"
+			//       },
+			//		 {
+			//         "frameType": "PRIV",
 			//         "info": "AirenSoft",
 			//         "data": "OvenMediaEngine"
 			//       }
@@ -255,6 +263,12 @@ namespace api
 			}
 
 			cmn::BitstreamFormat event_format = cmn::BitstreamFormat::ID3v2;
+			bool urgent = false;
+
+			if (request_body.isMember("urgent") == true && request_body["urgent"].isBool() == true)
+			{
+				urgent = request_body["urgent"].asBool();
+			}
 
 			auto events = request_body["events"];
 			if (events.size() == 0)
@@ -294,6 +308,10 @@ namespace api
 				else if (frame_type.UpperCaseString().Get(0) == 'T')
 				{
 					frame = std::make_shared<ID3v2TextFrame>(frame_type, data);
+				}
+				else if (frame_type.UpperCaseString() == "PRIV")
+				{
+					frame = std::make_shared<ID3v2PrivFrame>(info, data);
 				}
 				else
 				{
@@ -337,16 +355,55 @@ namespace api
 			{
 				throw http::HttpError(http::StatusCode::NotFound,
 									"Could not find stream: [%s/%s/%s]",
-									vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), stream->GetName().CStr());
+									vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
 			}
 
-			if (source_stream->SendDataFrame(-1, event_format, event_type, id3v2_event->Serialize()) == false)
+			if (source_stream->SendDataFrame(-1, event_format, event_type, id3v2_event->Serialize(), urgent) == false)
 			{
 				throw http::HttpError(http::StatusCode::InternalServerError,
 									"Internal Server Error - Could not inject event: [%s/%s/%s]",
-									vhost->GetName().CStr(), app->GetName().GetAppName().CStr(), stream->GetName().CStr());
+									vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
 			}
 
+			return {http::StatusCode::OK};
+		}
+
+		ApiResponse StreamActionsController::OnPostConcludeHlsLive(const std::shared_ptr<http::svr::HttpExchange> &client, const Json::Value &request_body,
+											   const std::shared_ptr<mon::HostMetrics> &vhost,
+											   const std::shared_ptr<mon::ApplicationMetrics> &app,
+											   const std::shared_ptr<mon::StreamMetrics> &stream,
+											   const std::vector<std::shared_ptr<mon::StreamMetrics>> &output_streams)
+		{
+			/*
+			{
+				"urgent": true,
+			}
+			*/
+
+			auto source_stream = GetSourceStream(stream);
+			if (source_stream == nullptr)
+			{
+				throw http::HttpError(http::StatusCode::NotFound,
+									"Could not find stream: [%s/%s/%s]",
+									vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
+			}
+
+			bool urgent = false;
+			if (request_body.isMember("urgent") == true && request_body["urgent"].isBool() == true)
+			{
+				urgent = request_body["urgent"].asBool();
+			}
+
+			auto media_event = std::make_shared<MediaEvent>(MediaEvent::CommandType::ConcludeLive, nullptr);
+			media_event->SetHighPriority(urgent);
+
+			if (source_stream->SendEvent(media_event) == false)
+			{
+				throw http::HttpError(http::StatusCode::InternalServerError,
+									"Internal Server Error - Could not inject ConcludeLive event: [%s/%s/%s]",
+									vhost->GetName().CStr(), app->GetVHostAppName().GetAppName().CStr(), stream->GetName().CStr());
+			}
+			
 			return {http::StatusCode::OK};
 		}
 
@@ -356,7 +413,7 @@ namespace api
 														   const std::shared_ptr<mon::StreamMetrics> &stream,
 														   const std::vector<std::shared_ptr<mon::StreamMetrics>> &output_streams)
 		{
-			logte("Called OnGetDummyAction. invoke [%s/%s/%s]", vhost->GetName().CStr(), app->GetName().GetAppName(), stream->GetName().CStr());
+			logte("Called OnGetDummyAction. invoke [%s/%s/%s]", vhost->GetName().CStr(), app->GetVHostAppName().GetAppName(), stream->GetName().CStr());
 
 			return app->GetConfig().ToJson();
 		}
@@ -388,13 +445,17 @@ namespace api
 				case StreamSourceType::Srt:
 					provider_type = ProviderType::Srt;
 					break;
-
+				case StreamSourceType::Scheduled:
+					provider_type = ProviderType::Scheduled;
+					break;
+				case StreamSourceType::Multiplex:
+					provider_type = ProviderType::Multiplex;
+					break;
 				case StreamSourceType::File:
 					provider_type = ProviderType::File;
 					break;
 				case StreamSourceType::RtmpPull:
 				case StreamSourceType::Transcoder:
-				default:
 					return nullptr;
 			}
 
@@ -404,36 +465,13 @@ namespace api
 				return nullptr;
 			}
 
-			auto application = provider->GetApplicationByName(stream->GetApplicationInfo().GetName());
+			auto application = provider->GetApplicationByName(stream->GetApplicationInfo().GetVHostAppName());
 			if (application == nullptr)
 			{
 				return nullptr;
 			}
 
 			return application->GetStreamByName(stream->GetName());
-		}
-
-		std::shared_ptr<LLHlsStream> StreamActionsController::GetLLHlsStream(const std::shared_ptr<mon::StreamMetrics> &stream_metric)
-		{
-			auto publisher = std::dynamic_pointer_cast<LLHlsPublisher>(ocst::Orchestrator::GetInstance()->GetPublisherFromType(PublisherType::LLHls));
-			if (publisher == nullptr)
-			{
-				return nullptr;
-			}
-
-			auto appliation = publisher->GetApplicationByName(stream_metric->GetApplicationInfo().GetName());
-			if (appliation == nullptr)
-			{
-				return nullptr;
-			}
-
-			auto stream = appliation->GetStream(stream_metric->GetName());
-			if (stream == nullptr)
-			{
-				return nullptr;
-			}
-
-			return std::dynamic_pointer_cast<LLHlsStream>(stream);
 		}
 	}
 }

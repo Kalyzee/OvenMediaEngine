@@ -46,7 +46,8 @@ public:
 	                                          const std::shared_ptr<const SessionDescription> &peer_sdp,
 	                                          const std::shared_ptr<IcePort> &ice_port,
 											  session_id_t ice_session_id,
-											  const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session);
+											  const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+												const http::svr::ws::ws_session_info_id ws_session_info_id);
 
 	RtcSession(const info::Session &session_info,
 			const std::shared_ptr<WebRtcPublisher> &publisher,
@@ -57,7 +58,8 @@ public:
 	        const std::shared_ptr<const SessionDescription> &peer_sdp,
 	        const std::shared_ptr<IcePort> &ice_port,
 			session_id_t ice_session_id,
-			const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session);
+			const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+			const http::svr::ws::ws_session_info_id ws_session_info_id);
 	~RtcSession() override;
 
 	bool Start() override;
@@ -73,6 +75,12 @@ public:
 
 	bool RequestChangeRendition(SwitchOver switch_over);
 	bool SetAutoAbr(bool auto_abr);
+
+	bool EnableVideo(bool enable);
+	bool VideoIsEnabled();
+
+	bool EnableAudio(bool enable);
+	bool AudioIsEnabled();
 
 	void SetSessionExpiredTime(uint64_t expired_time);
 
@@ -110,6 +118,7 @@ private:
 	
 	bool SendPlaylistInfo(const std::shared_ptr<const RtcPlaylist> &playlist) const;
 	bool SendRenditionChanged(const std::shared_ptr<const RtcRendition> &rendition) const;
+	bool SendSessionChanged() const;
 
 	std::shared_ptr<WebRtcPublisher>	_publisher;
 
@@ -120,7 +129,11 @@ private:
 	std::shared_ptr<const SessionDescription> _offer_sdp;
 	std::shared_ptr<const SessionDescription> _peer_sdp;
 	std::shared_ptr<IcePort>            _ice_port;
-	std::shared_ptr<http::svr::ws::WebSocketSession> 	_ws_session; // Signalling  
+
+	// Signalling
+	std::shared_ptr<http::svr::ws::WebSocketSession> 	_ws_session; 
+	http::svr::ws::ws_session_info_id 	_ws_session_info_id;
+  
 
 	uint8_t                             _video_payload_type = 0;
 	uint32_t							_video_ssrc = 0;
@@ -147,6 +160,9 @@ private:
 	uint16_t _video_rtp_sequence_number = 0;
 	uint16_t _audio_rtp_sequence_number = 0;
 	uint16_t _wide_sequence_number = 0;
+
+	bool _video_enabled = true;
+	bool _audio_enabled = true;
 
 	ov::StopWatch _abr_test_watch;
 	bool _changed = false;

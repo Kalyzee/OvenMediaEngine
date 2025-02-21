@@ -76,6 +76,11 @@ namespace pvd
 		return true;
 	}
 
+	bool Stream::OnStreamPrepared(bool inbound)
+	{
+		return true;
+	}
+
 	// Consider the reconnection time and add it to the base timestamp
 	void Stream::UpdateReconnectTimeToBasetime()
 	{
@@ -102,7 +107,7 @@ namespace pvd
 		return GetApplication()->GetApplicationTypeName();
 	}
 
-	bool Stream::SendDataFrame(int64_t timestamp, const cmn::BitstreamFormat &format, const cmn::PacketType &packet_type, const std::shared_ptr<ov::Data> &frame)
+	bool Stream::SendDataFrame(int64_t timestamp, const cmn::BitstreamFormat &format, const cmn::PacketType &packet_type, const std::shared_ptr<ov::Data> &frame, bool urgent)
 	{
 		if (frame == nullptr)
 		{
@@ -124,8 +129,29 @@ namespace pvd
 															timestamp,
 															format,
 															packet_type);
+		event_message->SetHighPriority(urgent);
 
 		return SendFrame(event_message);
+	}
+
+	bool Stream::SendEvent(const std::shared_ptr<MediaEvent> &event)
+	{
+		if (event == nullptr)
+		{
+			return false;
+		}
+
+		auto data_track = GetFirstTrackByType(cmn::MediaType::Data);
+		if (data_track == nullptr)
+		{
+			logte("Data track is not found. %s/%s(%u)", GetApplicationName(), GetName().CStr(), GetId());
+			return false;
+		}
+
+		event->SetMsid(GetMsid());
+		event->SetTrackId(data_track->GetId());
+
+		return SendFrame(event);
 	}
 
 	std::shared_ptr<ov::Url> Stream::GetRequestedUrl() const
@@ -258,17 +284,7 @@ namespace pvd
 		// Make decision timestamp calculation method	
 		if (_rtp_timestamp_method == RtpTimestampCalculationMethod::UNDER_DECISION)
 		{
-			if (GetTracks().size() == 1)
-			{
-				logti("Since this stream has a single track, it computes PTS alone without RTCP SR.");
-				_rtp_timestamp_method = RtpTimestampCalculationMethod::SINGLE_DELTA;
-			}
-			else if (_rtp_lip_sync_clock.IsEnabled() == true)
-			{
-				logti("Since this stream has received an RTCP SR, it counts the PTS with the SR.");
-				_rtp_timestamp_method = RtpTimestampCalculationMethod::WITH_RTCP_SR;
-			}
-			else if (GetDirectionType() == DirectionType::PULL)
+			if (GetDirectionType() == DirectionType::PULL)
 			{
 				// If this stream is type of PullStream, check the property of IgnoreRtcpSRTimestamp.
 				auto stream = std::static_pointer_cast<pvd::PullStream>(GetSharedPtr());
@@ -284,21 +300,35 @@ namespace pvd
 					}
 				}
 			}
-			// If it exceeds 5 seconds, it is calculated independently without RTCP SR.
-			else if (_rtp_lip_sync_clock.IsEnabled() == false && _first_rtp_received_time.Elapsed() > 5000)
+
+			if (_rtp_timestamp_method == RtpTimestampCalculationMethod::UNDER_DECISION)
 			{
-				logtw("Since the RTCP SR was not received within 5 seconds, the PTS is calculated for each track without RTCP SR. (Lip-Sync may be out of sync)");
-				_rtp_timestamp_method = RtpTimestampCalculationMethod::SINGLE_DELTA;
-			}
-			else if (_rtp_lip_sync_clock.IsEnabled() == false && _first_rtp_received_time.Elapsed() <= 5000)
-			{
-				// Wait for RTCP SR for 5 seconds
-				if (_first_rtp_received_time.IsStart() == false)
+				if ((GetMediaTrackCount(cmn::MediaType::Video) + GetMediaTrackCount(cmn::MediaType::Audio)) == 1)
 				{
-					logtw("Wait for RTCP SR for 5 seconds before starting the stream.");
-					_first_rtp_received_time.Start();
+					logti("Since this stream has a single track, it computes PTS alone without RTCP SR.");
+					_rtp_timestamp_method = RtpTimestampCalculationMethod::SINGLE_DELTA;
 				}
-				return false; 
+				else if (_rtp_lip_sync_clock.IsEnabled() == true)
+				{
+					logti("Since this stream has received an RTCP SR, it counts the PTS with the SR.");
+					_rtp_timestamp_method = RtpTimestampCalculationMethod::WITH_RTCP_SR;
+				}
+				// If it exceeds 5 seconds, it is calculated independently without RTCP SR.
+				else if (_rtp_lip_sync_clock.IsEnabled() == false && _first_rtp_received_time.Elapsed() > 5000)
+				{
+					logtw("Since the RTCP SR was not received within 5 seconds, the PTS is calculated for each track without RTCP SR. (Lip-Sync may be out of sync)");
+					_rtp_timestamp_method = RtpTimestampCalculationMethod::SINGLE_DELTA;
+				}
+				else if (_rtp_lip_sync_clock.IsEnabled() == false && _first_rtp_received_time.Elapsed() <= 5000)
+				{
+					// Wait for RTCP SR for 5 seconds
+					if (_first_rtp_received_time.IsStart() == false)
+					{
+						logtw("Wait for RTCP SR for 5 seconds before starting the stream.");
+						_first_rtp_received_time.Start();
+					}
+					return false; 
+				}
 			}
 		}
 
@@ -350,7 +380,7 @@ namespace pvd
 			}
 
 			// for debugging
-			logtd("[%s/%s(%d)] Get start timestamp of stream. track:%d, ts:%lld (%d/%d) (%lldus)", _application->GetName().CStr(), GetName().CStr(), GetId(), track_id, dts, track->GetTimeBase().GetNum(), track->GetTimeBase().GetDen(), _start_timestamp);
+			logtd("[%s/%s(%d)] Get start timestamp of stream. track:%d, ts:%lld (%d/%d) (%lldus)", _application->GetVHostAppName().CStr(), GetName().CStr(), GetId(), track_id, dts, track->GetTimeBase().GetNum(), track->GetTimeBase().GetDen(), _start_timestamp);
 		}
 		int64_t start_timestamp_tb = (int64_t)((double)_start_timestamp * expr_us2tb);
 

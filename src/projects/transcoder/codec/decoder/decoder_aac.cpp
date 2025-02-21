@@ -201,7 +201,7 @@ void DecoderAAC::CodecThread()
 					auto codec_info = ffmpeg::Conv::CodecInfoToString(_context, _codec_par);
 
 					logti("[%s/%s(%u)] input track information: %s",
-						  _stream_info.GetApplicationInfo().GetName().CStr(), _stream_info.GetName().CStr(), _stream_info.GetId(), codec_info.CStr());
+						  _stream_info.GetApplicationInfo().GetVHostAppName().CStr(), _stream_info.GetName().CStr(), _stream_info.GetId(), codec_info.CStr());
 
 					_change_format = true;
 
@@ -236,7 +236,7 @@ void DecoderAAC::CodecThread()
 
 			_last_pkt_pts = output_frame->GetPts();
 
-			SendOutputBuffer(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(output_frame));
+			Complete(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(output_frame));
 		}
 	}
 }

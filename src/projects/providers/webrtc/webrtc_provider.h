@@ -62,21 +62,21 @@ namespace pvd
 		// SignallingObserver Implementation
 		//--------------------------------------------------------------------
 		std::shared_ptr<const SessionDescription> OnRequestOffer(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-																 const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+																 const http::svr::ws::ws_session_info_id ws_session_info_id,
 																 std::vector<RtcIceCandidate> *ice_candidates, bool &tcp_relay) override;
 		bool OnAddRemoteDescription(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-									const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+									const http::svr::ws::ws_session_info_id ws_session_info_id,
 									const std::shared_ptr<const SessionDescription> &offer_sdp,
-									const std::shared_ptr<const SessionDescription> &peer_sdp) override;
+									const std::shared_ptr<const SessionDescription> &answer_sdp) override;
 		bool OnIceCandidate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-							const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+							const http::svr::ws::ws_session_info_id ws_session_info_id,
 							const std::shared_ptr<RtcIceCandidate> &candidate,
 							const ov::String &username_fragment) override;
 
 		bool OnStopCommand(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-						   const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+						   const http::svr::ws::ws_session_info_id ws_session_info_id,
 						   const std::shared_ptr<const SessionDescription> &offer_sdp,
-						   const std::shared_ptr<const SessionDescription> &peer_sdp) override;
+						   const std::shared_ptr<const SessionDescription> &answer_sdp) override;
 		//--------------------------------------------------------------------
 
 		//--------------------------------------------------------------------

@@ -1,4 +1,4 @@
-FROM    ubuntu:20.04 AS base
+FROM    ubuntu:22.04 AS base
 
 ## Install libraries by package
 ENV     DEBIAN_FRONTEND=noninteractive
@@ -8,7 +8,7 @@ FROM    base AS build
 
 WORKDIR /tmp
 
-ARG     OME_VERSION=master
+ARG     OME_VERSION=v0.17.1
 ARG 	STRIP=TRUE
 
 ENV     PREFIX=/opt/ovenmediaengine

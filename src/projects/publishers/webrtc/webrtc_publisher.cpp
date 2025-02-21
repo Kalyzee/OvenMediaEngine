@@ -200,37 +200,50 @@ bool WebRtcPublisher::OnDeletePublisherApplication(const std::shared_ptr<pub::Ap
 
 // Called when receives request offer sdp from client
 std::shared_ptr<const SessionDescription> WebRtcPublisher::OnRequestOffer(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-																		  const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+																		  const http::svr::ws::ws_session_info_id ws_session_info_id,
 																		  std::vector<RtcIceCandidate> *ice_candidates, bool &tcp_relay)
 {
-	info::VHostAppName final_vhost_app_name = vhost_app_name;
-	ov::String final_host_name = host_name;
-	ov::String final_stream_name = stream_name;
-
-	[[maybe_unused]] RequestStreamResult result = RequestStreamResult::init;
-	auto request = ws_session->GetRequest();
-	auto remote_address = request->GetRemote()->GetRemoteAddress();
-	auto uri = request->GetUri();
-	auto final_url = ov::Url::Parse(uri);
-	if (final_url == nullptr)
+	std::shared_ptr<http::svr::ws::WebSocketSession::WebSocketSesssionInfo> ws_session_info = ws_session->GetClient(ws_session_info_id);
+	if (ws_session_info == nullptr)
 	{
-		logte("Could not parse the url: %s", uri.CStr());
+		logte("Could not find ws_session_info : %d", ws_session_info_id);
 		return nullptr;
 	}
+
+	info::VHostAppName final_vhost_app_name = ws_session_info->vhost_app_name;
+	ov::String final_host_name = ws_session_info->host_name;
+	ov::String final_stream_name = ws_session_info->stream_name;
+
+
+	[[maybe_unused]] RequestStreamResult result = RequestStreamResult::init;
+	logtd("WebRTCPublisher::OnRequestOffer");
+	auto request = ws_session->GetRequest();
+	auto request_uri = ov::Url::Parse(request->GetUri());
+	auto final_url = ws_session_info->uri;
+
 
 	ov::String final_file_name = final_url->File();
 
 	// PORT can be omitted if port is default port, but SignedPolicy requires this information.
 	if (final_url->Port() == 0)
 	{
-		final_url->SetPort(request->GetRemote()->GetLocalAddress()->Port());
+		auto port = 0;
+		if (request_uri != nullptr)
+		{
+			port = request_uri->Port();
+		}
+		if (port == 0) 
+		{
+			port = request->GetRemote()->GetLocalAddress()->Port();
+		}
+		final_url->SetPort(port);
 	}
 
 	auto requested_url = final_url;
+	auto request_info = std::make_shared<ac::RequestInfo>(final_url, nullptr, request->GetRemote(), request);
 
 	uint64_t session_life_time = 0;
-	std::shared_ptr<const SignedToken> signed_token;
-	auto [signed_policy_result, signed_policy] = Publisher::VerifyBySignedPolicy(final_url, remote_address);
+	auto [signed_policy_result, signed_policy] = Publisher::VerifyBySignedPolicy(request_info);
 	if (signed_policy_result == AccessController::VerificationResult::Pass)
 	{
 		session_life_time = signed_policy->GetStreamExpireEpochMSec();
@@ -246,26 +259,9 @@ std::shared_ptr<const SessionDescription> WebRtcPublisher::OnRequestOffer(const 
 	}
 	else if (signed_policy_result == AccessController::VerificationResult::Off)
 	{
-		// SingedToken
-		auto [signed_token_result, signed_token] = Publisher::VerifyBySignedToken(final_url, remote_address);
-		if (signed_token_result == AccessController::VerificationResult::Error)
-		{
-			return nullptr;
-		}
-		else if (signed_token_result == AccessController::VerificationResult::Fail)
-		{
-			logtw("%s", signed_token->GetErrMessage().CStr());
-			return nullptr;
-		}
-		else if (signed_token_result == AccessController::VerificationResult::Pass)
-		{
-			session_life_time = signed_token->GetStreamExpiredTime();
-		}
 	}
 
 	// Admission Webhooks
-	auto request_info = std::make_shared<AccessController::RequestInfo>(final_url, remote_address, request->GetHeader("USER-AGENT"));
-
 	auto [webhooks_result, admission_webhooks] = VerifyByAdmissionWebhooks(request_info);
 	if (webhooks_result == AccessController::VerificationResult::Off)
 	{
@@ -290,7 +286,16 @@ std::shared_ptr<const SessionDescription> WebRtcPublisher::OnRequestOffer(const 
 			final_url = admission_webhooks->GetNewURL();
 			if (final_url->Port() == 0)
 			{
-				final_url->SetPort(request->GetRemote()->GetLocalAddress()->Port());
+				auto port = 0;
+				if (request_uri != nullptr)
+				{
+					port = request_uri->Port();
+				}
+				if (port == 0) 
+				{
+					port = request->GetRemote()->GetLocalAddress()->Port();
+				}
+				final_url->SetPort(port);
 			}
 
 			final_vhost_app_name = ocst::Orchestrator::GetInstance()->ResolveApplicationNameFromDomain(final_url->Host(), final_url->App());
@@ -370,26 +375,33 @@ std::shared_ptr<const SessionDescription> WebRtcPublisher::OnRequestOffer(const 
 	session_description->Update();
 
 	// Passed AccessControl
-	ws_session->AddUserData("authorized", true);
-	ws_session->AddUserData("final_url", final_url->ToUrlString(true));
-	ws_session->AddUserData("requested_url", requested_url->ToUrlString(true));
-	ws_session->AddUserData("stream_expired", session_life_time);
+	ws_session_info->AddUserData("authorized", true);
+	ws_session_info->AddUserData("final_url", final_url->ToUrlString(true));
+	ws_session_info->AddUserData("requested_url", requested_url->ToUrlString(true));
+	ws_session_info->AddUserData("stream_expired", session_life_time);
 
 	return session_description;
 }
 
 // Called when receives an answer sdp from client
 bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-											 const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+											 const http::svr::ws::ws_session_info_id ws_session_info_id,
 											 const std::shared_ptr<const SessionDescription> &offer_sdp,
-											 const std::shared_ptr<const SessionDescription> &peer_sdp)
+											 const std::shared_ptr<const SessionDescription> &answer_sdp)
 {
-	auto [autorized_exist, authorized] = ws_session->GetUserData("authorized");
+	std::shared_ptr<http::svr::ws::WebSocketSession::WebSocketSesssionInfo> ws_session_info = ws_session->GetClient(ws_session_info_id);
+	if (ws_session_info == nullptr)
+	{
+		logte("Could not find ws_session_info : %d", ws_session_info_id);
+		return false;
+	}
+
+	auto [autorized_exist, authorized] = ws_session_info->GetUserData("authorized");
 	ov::String requested_uri, final_uri;
 	uint64_t session_life_time = 0;
 	if (autorized_exist == true && std::holds_alternative<bool>(authorized) == true && std::get<bool>(authorized) == true)
 	{
-		auto [requested_url_exist, requested_url] = ws_session->GetUserData("requested_url");
+		auto [requested_url_exist, requested_url] = ws_session_info->GetUserData("requested_url");
 		if (requested_url_exist == true && std::holds_alternative<ov::String>(requested_url) == true)
 		{
 			requested_uri = std::get<ov::String>(requested_url);
@@ -399,7 +411,7 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 			return false;
 		}
 
-		auto [final_url_exist, final_url] = ws_session->GetUserData("final_url");
+		auto [final_url_exist, final_url] = ws_session_info->GetUserData("final_url");
 		if (final_url_exist == true && std::holds_alternative<ov::String>(final_url) == true)
 		{
 			final_uri = std::get<ov::String>(final_url);
@@ -409,7 +421,7 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 			return false;
 		}
 
-		auto [stream_expired_exist, stream_expired] = ws_session->GetUserData("stream_expired");
+		auto [stream_expired_exist, stream_expired] = ws_session_info->GetUserData("stream_expired");
 		if (stream_expired_exist == true && std::holds_alternative<uint64_t>(stream_expired) == true)
 		{
 			session_life_time = std::get<uint64_t>(stream_expired);
@@ -443,11 +455,7 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 	auto final_stream_name = final_url->Stream();
 	auto final_file_name = final_url->File();
 
-	// SignedPolicy and SignedToken
-	auto request = ws_session->GetRequest();
-	auto remote_address = request->GetRemote()->GetRemoteAddress();
-
-	ov::String remote_sdp_text = peer_sdp->ToString();
+	ov::String remote_sdp_text = answer_sdp->ToString();
 	logtd("OnAddRemoteDescription: %s", remote_sdp_text.CStr());
 
 	auto application = GetApplicationByName(final_vhost_app_name);
@@ -459,7 +467,7 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 	}
 
 	auto ice_session_id = _ice_port->IssueUniqueSessionId();
-	auto session = RtcSession::Create(Publisher::GetSharedPtrAs<WebRtcPublisher>(), application, stream, final_file_name, offer_sdp, peer_sdp, _ice_port, ice_session_id, ws_session);
+	auto session = RtcSession::Create(Publisher::GetSharedPtrAs<WebRtcPublisher>(), application, stream, final_file_name, offer_sdp, answer_sdp, _ice_port, ice_session_id, ws_session, ws_session_info_id);
 	if (session != nullptr)
 	{
 		stream->AddSession(session);
@@ -468,7 +476,7 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 		MonitorInstance->OnSessionConnected(*stream, PublisherType::Webrtc);
 
 		auto ice_timeout = application->GetConfig().GetPublishers().GetWebrtcPublisher().GetTimeout();
-		_ice_port->AddSession(IcePortObserver::GetSharedPtr(), ice_session_id, IceSession::Role::CONTROLLING, offer_sdp, peer_sdp, ice_timeout, session_life_time, session);
+		_ice_port->AddSession(IcePortObserver::GetSharedPtr(), ice_session_id, IceSession::Role::CONTROLLING, offer_sdp, answer_sdp, ice_timeout, session_life_time, session);
 	}
 	else
 	{
@@ -480,15 +488,22 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 }
 
 bool WebRtcPublisher::OnChangeRendition(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+										const http::svr::ws::ws_session_info_id ws_session_info_id,
 										bool change_rendition, const ov::String &rendition_name, bool change_auto, bool &auto_abr,
 										const std::shared_ptr<const SessionDescription> &offer_sdp,
 										const std::shared_ptr<const SessionDescription> &peer_sdp)
 {
-	auto [autorized_exist, authorized] = ws_session->GetUserData("authorized");
+	std::shared_ptr<http::svr::ws::WebSocketSession::WebSocketSesssionInfo> ws_session_info = ws_session->GetClient(ws_session_info_id);
+	if (ws_session_info == nullptr)
+	{
+		logte("Could not find ws_session_info : %d", ws_session_info_id);
+		return false;
+	}
+	auto [autorized_exist, authorized] = ws_session_info->GetUserData("authorized");
 	ov::String uri;
 	if (autorized_exist == true && std::holds_alternative<bool>(authorized) == true && std::get<bool>(authorized) == true)
 	{
-		auto [final_url_exist, final_url] = ws_session->GetUserData("final_url");
+		auto [final_url_exist, final_url] = ws_session_info->GetUserData("final_url");
 		if (final_url_exist == true && std::holds_alternative<ov::String>(final_url) == true)
 		{
 			uri = std::get<ov::String>(final_url);
@@ -544,17 +559,97 @@ bool WebRtcPublisher::OnChangeRendition(const std::shared_ptr<http::svr::ws::Web
 	return true;
 }
 
+bool WebRtcPublisher::OnSessionUpdate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+									  const http::svr::ws::ws_session_info_id ws_session_info_id,
+										bool change_video_state, bool &enable_video, bool change_audio_state, bool &enable_audio,
+									  const std::shared_ptr<const SessionDescription> &offer_sdp,
+									  const std::shared_ptr<const SessionDescription> &peer_sdp)
+{
+	std::shared_ptr<http::svr::ws::WebSocketSession::WebSocketSesssionInfo> ws_session_info = ws_session->GetClient(ws_session_info_id);
+	if (ws_session_info == nullptr)
+	{
+		logte("Could not find ws_session_info : %d", ws_session_info_id);
+		return false;
+	}
+
+	auto [autorized_exist, authorized] = ws_session_info->GetUserData("authorized");
+	ov::String uri;
+	if (autorized_exist == true && std::holds_alternative<bool>(authorized) == true && std::get<bool>(authorized) == true)
+	{
+		auto [final_url_exist, final_url] = ws_session_info->GetUserData("final_url");
+		if (final_url_exist == true && std::holds_alternative<ov::String>(final_url) == true)
+		{
+			uri = std::get<ov::String>(final_url);
+		}
+		else
+		{
+			return false;
+		}
+	}
+	else
+	{
+		// This client was unauthoized when request offer situation
+		return false;
+	}
+
+	auto parsed_url = ov::Url::Parse(uri);
+	if (parsed_url == nullptr)
+	{
+		logte("Could not parse the url: %s", uri.CStr());
+		return false;
+	}
+
+	auto final_vhost_app_name = ocst::Orchestrator::GetInstance()->ResolveApplicationNameFromDomain(parsed_url->Host(), parsed_url->App());
+	auto final_stream_name = parsed_url->Stream();
+
+	logtd("ChangeRendition command received : %s/%s/%u", final_vhost_app_name.CStr(), final_stream_name.CStr(), offer_sdp->GetSessionId());
+
+	// Find Stream
+	auto stream = std::static_pointer_cast<RtcStream>(GetStream(final_vhost_app_name, final_stream_name));
+	if (!stream)
+	{
+		logte("Session(%u) update failed. Cannot find stream (%s/%s)", offer_sdp->GetSessionId(), final_vhost_app_name.CStr(), final_stream_name.CStr());
+		return false;
+	}
+
+	auto session = std::static_pointer_cast<RtcSession>(stream->GetSession(offer_sdp->GetSessionId()));
+	if (session == nullptr)
+	{
+		logte("Session(%u) update failed. Cannot find session by offer sdp session id", offer_sdp->GetSessionId());
+		return false;
+	}
+
+	if (change_video_state == true)
+	{
+		session->EnableVideo(enable_video);
+	}
+
+	if (change_audio_state == true)
+	{
+		session->EnableAudio(enable_audio);
+	}
+
+	return true;
+}
+
 bool WebRtcPublisher::OnStopCommand(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-									const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+									const http::svr::ws::ws_session_info_id ws_session_info_id,
 									const std::shared_ptr<const SessionDescription> &offer_sdp,
 									const std::shared_ptr<const SessionDescription> &peer_sdp)
 {
-	logti("Stop command received : %s/%s/%u", vhost_app_name.CStr(), stream_name.CStr(), offer_sdp->GetSessionId());
+	std::shared_ptr<http::svr::ws::WebSocketSession::WebSocketSesssionInfo> ws_session_info = ws_session->GetClient(ws_session_info_id);
+	if (ws_session_info == nullptr)
+	{
+		logte("Could not find ws_session_info : %d", ws_session_info_id);
+		return false;
+	}
+	info::VHostAppName final_vhost_app_name = ws_session_info->vhost_app_name;
+	ov::String final_stream_name = ws_session_info->stream_name;
 
-	info::VHostAppName final_vhost_app_name = vhost_app_name;
-	ov::String final_stream_name = stream_name;
+	logti("Stop command received : %s/%s/%u", final_vhost_app_name.CStr(), final_stream_name.CStr(), offer_sdp->GetSessionId());
 
-	auto [final_url_exist, url] = ws_session->GetUserData("final_url");
+
+	auto [final_url_exist, url] = ws_session_info->GetUserData("final_url");
 	if (final_url_exist == true && std::holds_alternative<ov::String>(url) == true)
 	{
 		ov::String uri = std::get<ov::String>(url);
@@ -574,7 +669,7 @@ bool WebRtcPublisher::OnStopCommand(const std::shared_ptr<http::svr::ws::WebSock
 	auto stream = std::static_pointer_cast<RtcStream>(GetStream(final_vhost_app_name, final_stream_name));
 	if (!stream)
 	{
-		logte("To stop session failed. Cannot find stream (%s/%s)", vhost_app_name.CStr(), stream_name.CStr());
+		logte("To stop session failed. Cannot find stream (%s/%s)", final_vhost_app_name.CStr(), final_stream_name.CStr());
 		return false;
 	}
 
@@ -587,16 +682,10 @@ bool WebRtcPublisher::OnStopCommand(const std::shared_ptr<http::svr::ws::WebSock
 
 	// Send Close to Admission Webhooks
 	auto request = ws_session->GetRequest();
-	auto remote_address{request->GetRemote()->GetRemoteAddress()};
 	auto requested_url = session->GetRequestedUrl();
 	auto final_url = session->GetFinalUrl();
-	if (remote_address && requested_url && final_url)
-	{
-		auto request_info = std::make_shared<AccessController::RequestInfo>(requested_url, remote_address, requested_url->ToUrlString(true) == final_url->ToUrlString(true) ? nullptr : final_url, request->GetHeader("USER-AGENT"));
-
-		SendCloseAdmissionWebhooks(request_info);
-	}
-	// the return check is not necessary
+	auto request_info = std::make_shared<ac::RequestInfo>(requested_url, final_url, request->GetRemote(), request);
+	SendCloseAdmissionWebhooks(request_info);
 
 	DisconnectSessionInternal(session);
 
@@ -606,7 +695,7 @@ bool WebRtcPublisher::OnStopCommand(const std::shared_ptr<http::svr::ws::WebSock
 }
 
 bool WebRtcPublisher::OnIceCandidate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-									 const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+									 const http::svr::ws::ws_session_info_id ws_session_info_id,
 									 const std::shared_ptr<RtcIceCandidate> &candidate,
 									 const ov::String &username_fragment)
 {
@@ -649,7 +738,7 @@ void WebRtcPublisher::OnStateChanged(IcePort &port, uint32_t session_id, IceConn
 		case IceConnectionState::Closed: {
 			logti("IcePort is disconnected. : (%s/%s/%u) reason(%d)", stream->GetApplicationName(), stream->GetName().CStr(), session->GetId(), state);
 
-			_signalling_server->Disconnect(session->GetApplication()->GetName(), session->GetStream()->GetName(), session->GetPeerSDP());
+			_signalling_server->Disconnect(session->GetApplication()->GetVHostAppName(), session->GetStream()->GetName(), session->GetPeerSDP());
 
 			//DisconnectSessionInternal(session);
 			break;

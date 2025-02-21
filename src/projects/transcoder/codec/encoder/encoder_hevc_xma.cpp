@@ -14,11 +14,11 @@
 
 bool EncoderHEVCxXMA::SetCodecParams()
 {
-	_codec_context->framerate = ::av_d2q((GetRefTrack()->GetFrameRate() > 0) ? GetRefTrack()->GetFrameRate() : GetRefTrack()->GetEstimateFrameRate(), AV_TIME_BASE);
+	_codec_context->framerate = ::av_d2q((GetRefTrack()->GetFrameRateByConfig() > 0) ? GetRefTrack()->GetFrameRateByConfig() : GetRefTrack()->GetEstimateFrameRate(), AV_TIME_BASE);
 	_codec_context->bit_rate = _codec_context->rc_min_rate = _codec_context->rc_max_rate = GetRefTrack()->GetBitrate();
 	_codec_context->sample_aspect_ratio = ::av_make_q(1, 1);
 	_codec_context->ticks_per_frame = 2;
-	_codec_context->time_base = ::av_inv_q(::av_mul_q(_codec_context->framerate, (AVRational){_codec_context->ticks_per_frame, 1}));
+	_codec_context->time_base = ffmpeg::Conv::TimebaseToAVRational(GetRefTrack()->GetTimeBase());
 	_codec_context->pix_fmt = (AVPixelFormat)GetSupportedFormat();
 	_codec_context->width = GetRefTrack()->GetWidth();
 	_codec_context->height = GetRefTrack()->GetHeight();
@@ -26,12 +26,21 @@ bool EncoderHEVCxXMA::SetCodecParams()
 	// Control Rate
 	::av_opt_set(_codec_context->priv_data, "control-rate", "cbr", 0); // low-latency
 
-	// Bit-rate
+	// Bitrate
 	::av_opt_set_int(_codec_context->priv_data, "max-bitrate",  _codec_context->bit_rate, 0);
 
-	//KeyFrame Interval
-	_codec_context->gop_size = (GetRefTrack()->GetKeyFrameInterval() == 0) ? (_codec_context->framerate.num / _codec_context->framerate.den) : GetRefTrack()->GetKeyFrameInterval();
-	::av_opt_set_int(_codec_context->priv_data, "periodicity-idr",  _codec_context->gop_size, 0);
+	// Keyframe Interval
+	// @see transcoder_encoder.cpp / force_keyframe_by_time_interval
+	auto key_frame_interval_type = GetRefTrack()->GetKeyFrameIntervalTypeByConfig();
+	if (key_frame_interval_type == cmn::KeyFrameIntervalType::TIME)
+	{
+		_codec_context->gop_size = (int32_t)(GetRefTrack()->GetFrameRate() * (double)GetRefTrack()->GetKeyFrameInterval() / 1000 * 2);
+	}
+	else if (key_frame_interval_type == cmn::KeyFrameIntervalType::FRAME)
+	{
+		_codec_context->gop_size = (GetRefTrack()->GetKeyFrameInterval() == 0) ? (_codec_context->framerate.num / _codec_context->framerate.den) : GetRefTrack()->GetKeyFrameInterval();
+		::av_opt_set_int(_codec_context->priv_data, "periodicity-idr",  _codec_context->gop_size, 0);		
+	}
 
 	// Bframes
 	::av_opt_set_int(_codec_context->priv_data, "bf", GetRefTrack()->GetBFrames(), 0);
@@ -63,6 +72,11 @@ bool EncoderHEVCxXMA::SetCodecParams()
 	{
 		logtd("Xilinx encoder does not support preset");
 	}	
+
+	_bitstream_format = cmn::BitstreamFormat::H265_ANNEXB;
+	
+	_packet_type = cmn::PacketType::NALU;
+
 	return true;
 }
 
@@ -73,6 +87,33 @@ bool EncoderHEVCxXMA::Configure(std::shared_ptr<MediaTrack> context)
 		return false;
 	}
 	
+	ov::String codec_name = "mpsoc_vcu_hevc";
+	const AVCodec *codec = ::avcodec_find_encoder_by_name(codec_name.CStr());
+	if (codec == nullptr)
+	{
+		logte("Could not find encoder: %s", codec_name.CStr());
+		return false;
+	}
+
+	_codec_context = ::avcodec_alloc_context3(codec);
+	if (_codec_context == nullptr)
+	{
+		logte("Could not allocate codec context for %s", codec_name.CStr());
+		return false;
+	}
+
+	if (SetCodecParams() == false)
+	{
+		logte("Could not set codec parameters for %s", codec_name.CStr());
+		return false;
+	}
+
+	if (::avcodec_open2(_codec_context, codec, nullptr) < 0)
+	{
+		logte("Could not open codec: %s", codec_name.CStr());
+		return false;
+	}
+
 	// Generates a thread that reads and encodes frames in the input_buffer queue and places them in the output queue.
 	try
 	{
@@ -90,91 +131,4 @@ bool EncoderHEVCxXMA::Configure(std::shared_ptr<MediaTrack> context)
 	}
 
 	return true;
-}
-
-void EncoderHEVCxXMA::CodecThread()
-{
-	ov::String codec_name = "mpsoc_vcu_hevc";
-	const AVCodec *codec = ::avcodec_find_encoder_by_name(codec_name.CStr());
-	if (codec == nullptr)
-	{
-		logte("Could not find encoder: %s", codec_name.CStr());
-		return ;
-	}
-
-	_codec_context = ::avcodec_alloc_context3(codec);
-	if (_codec_context == nullptr)
-	{
-		logte("Could not allocate codec context for %s", codec_name.CStr());
-		return ;
-	}
-
-	if (SetCodecParams() == false)
-	{
-		logte("Could not set codec parameters for %s", codec_name.CStr());
-		return ;
-	}
-
-	if (::avcodec_open2(_codec_context, codec, nullptr) < 0)
-	{
-		logte("Could not open codec: %s", codec_name.CStr());
-		return ;
-	}
-
-	while (!_kill_flag)
-	{
-		auto obj = _input_buffer.Dequeue();
-		if (obj.has_value() == false)
-			continue;
-
-		auto media_frame = std::move(obj.value());
-
-		///////////////////////////////////////////////////
-		// Request frame encoding to codec
-		///////////////////////////////////////////////////
-		auto av_frame = ffmpeg::Conv::ToAVFrame(cmn::MediaType::Video, media_frame);
-		if (!av_frame)
-		{
-			logte("Could not allocate the video frame data");
-			break;
-		}
-
-		int ret = ::avcodec_send_frame(_codec_context, av_frame);
-		if (ret < 0)
-		{
-			logte("Error sending a frame for encoding : %d", ret);
-		}
-
-		///////////////////////////////////////////////////
-		// The encoded packet is taken from the codec.
-		///////////////////////////////////////////////////
-		while (true)
-		{
-			// Check frame is available
-			int ret = ::avcodec_receive_packet(_codec_context, _packet);
-			if (ret == AVERROR(EAGAIN))
-			{
-				// More packets are needed for encoding.
-				break;
-			}
-			else if (ret == AVERROR_EOF && ret < 0)
-			{
-				logte("Error receiving a packet for decoding : %d", ret);
-				break;
-			}
-			else
-			{
-				auto media_packet = ffmpeg::Conv::ToMediaPacket(_packet, cmn::MediaType::Video, cmn::BitstreamFormat::H264_ANNEXB, cmn::PacketType::NALU);
-				if (media_packet == nullptr)
-				{
-					logte("Could not allocate the media packet");
-					break;
-				}
-
-				::av_packet_unref(_packet);
-
-				SendOutputBuffer(std::move(media_packet));
-			}
-		}
-	}
 }

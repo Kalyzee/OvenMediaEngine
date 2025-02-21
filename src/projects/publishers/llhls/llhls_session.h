@@ -50,9 +50,6 @@ public:
 	void SendOutgoingData(const std::any &packet) override;
 	void OnMessageReceived(const std::any &message) override;
 
-	void OnPlayerConnected();
-	uint32_t GetPlayerCount() const;
-
 	void UpdateLastRequest(uint32_t connection_id);
 	uint64_t GetLastRequestTime(uint32_t connection_id) const;
 	void OnConnectionDisconnected(uint32_t connection_id);
@@ -85,6 +82,8 @@ private:
 	void ResponseData(const std::shared_ptr<http::svr::HttpExchange> &exchange);
 
 	void OnPlaylistUpdated(const int32_t &track_id, const int64_t &msn, const int64_t &part);
+
+	ov::String MakeQueryStringToPropagate(const std::shared_ptr<ov::Url> &request_uri);
 
 	// Pending requests
 	struct PendingRequest

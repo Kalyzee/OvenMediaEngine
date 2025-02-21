@@ -57,6 +57,7 @@ namespace info
 
 		_playlists = stream._playlists;
 		_representation_type = stream._representation_type;
+		_from_origin_map_store = stream._from_origin_map_store;
 	}
 
 	Stream::Stream(StreamSourceType source)
@@ -93,7 +94,7 @@ namespace info
 	ov::String Stream::GetUri()
 	{
 		// #vhost name#appname/stream name
-		ov::String vhost_app_name = _app_info != nullptr ? _app_info->GetName().CStr() : "Unknown";
+		ov::String vhost_app_name = _app_info != nullptr ? _app_info->GetVHostAppName().CStr() : "Unknown";
 		return ov::String::FormatString("%s/%s", vhost_app_name.CStr(), GetName().CStr());
 	}
 
@@ -447,19 +448,19 @@ namespace info
 			return "Unknown";
 		}
 
-		return _app_info->GetName().CStr();
+		return _app_info->GetVHostAppName().CStr();
 	}
 
 	ov::String Stream::GetInfoString()
 	{
-		ov::String out_str = ov::String::FormatString("\n[Stream Info]\nid(%u), msid(%u), output(%s), SourceType(%s), RepresentationType(%s), Created Time (%s) UUID(%s)\n",
+		ov::String out_str = ov::String::FormatString("\n[Stream Info]\nid(%u), msid(%u), output(%s), SourceType(%s), RepresentationType(%s), Created Time (%s) UUID(%s)\nIsFromOriginMapStore(%d)\n",
 													  GetId(), GetMsid(), GetName().CStr(), ::StringFromStreamSourceType(_source_type).CStr(), ::StringFromStreamRepresentationType(_representation_type).CStr(),
-													  ov::Converter::ToString(_created_time).CStr(), GetUUID().CStr());
+													  ov::Converter::ToString(_created_time).CStr(), GetUUID().CStr(), IsFromOriginMapStore());
 		if (GetLinkedInputStream() != nullptr)
 		{
-			out_str.AppendFormat("\t>> Origin Stream Info\n\tid(%u), output(%s), SourceType(%s), Created Time (%s)\n",
+			out_str.AppendFormat("\t>> Origin Stream Info\n\tid(%u), output(%s), SourceType(%s), Created Time (%s)IsFromOriginMapStore(%d)\n",
 								 GetLinkedInputStream()->GetId(), GetLinkedInputStream()->GetName().CStr(), ::StringFromStreamSourceType(GetLinkedInputStream()->GetSourceType()).CStr(),
-								 ov::Converter::ToString(GetLinkedInputStream()->GetCreatedTime()).CStr());
+								 ov::Converter::ToString(GetLinkedInputStream()->GetCreatedTime()).CStr(), GetLinkedInputStream()->IsFromOriginMapStore());
 		}
 
 		if (GetOriginStreamUUID().IsEmpty() == false)

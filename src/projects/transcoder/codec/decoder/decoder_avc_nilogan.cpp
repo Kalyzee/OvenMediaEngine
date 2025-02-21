@@ -108,6 +108,8 @@ bool DecoderAVCxNILOGAN::InitCodec()
 		return false;
 	}
 	
+	_change_format = false;
+
 	return true;
 }
 
@@ -177,7 +179,10 @@ void DecoderAVCxNILOGAN::CodecThread()
 			}
 			
 			// if activated, I got Warning: time out on receiving a decoded framefrom the decoder, assume dropped, received frame_num: 0, sent pkt_num: 1, pkt_num-frame_num: 1, sending another packet.
-			// ReinitCodecIfNeed();			
+			// if(ReinitCodecIfNeed() == false)
+			// {
+			// 	break;
+			// }
  
 			if (_pkt->size > 0)
 			{
@@ -270,7 +275,7 @@ void DecoderAVCxNILOGAN::CodecThread()
 					{
 						auto codec_info = ffmpeg::Conv::CodecInfoToString(_context, _codec_par);
 						logti("[%s/%s(%u)] input stream information: %s",
-							  _stream_info.GetApplicationInfo().GetName().CStr(),
+							  _stream_info.GetApplicationInfo().GetVHostAppName().CStr(),
 							  _stream_info.GetName().CStr(),
 							  _stream_info.GetId(),
 							  codec_info.CStr());
@@ -302,7 +307,7 @@ void DecoderAVCxNILOGAN::CodecThread()
 
 				::av_frame_unref(_frame);
 
-				SendOutputBuffer(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
+				Complete(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
 			}
 		}
 	}

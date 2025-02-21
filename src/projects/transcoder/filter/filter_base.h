@@ -81,7 +81,7 @@ public:
 		return _state;
 	}
 
-	int32_t SendBuffer(std::shared_ptr<MediaFrame> buffer)
+	bool SendBuffer(std::shared_ptr<MediaFrame> buffer)
 	{
 		if(GetState() == State::CREATED || GetState() == State::STARTED)
 		{
@@ -91,6 +91,14 @@ public:
 		}
 
 		return false;
+	}
+
+	void Complete(std::shared_ptr<MediaFrame> buffer)
+	{
+		if (_complete_handler != nullptr && _kill_flag == false)
+		{
+			_complete_handler(std::move(buffer));
+		}
 	}
 
 protected:
@@ -121,8 +129,6 @@ protected:
 	// double _scale = 0.0;
 
 	// resolution of the input video frame
-
-
 	std::shared_ptr<MediaTrack> _input_track;
 	std::shared_ptr<MediaTrack> _output_track;
 

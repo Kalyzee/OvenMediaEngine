@@ -24,29 +24,36 @@ public:
 	// When request offer is requested, SDP of OME must be created and returned
 	// If there are multiple Observer registered, the SDP returned first is used
 	virtual std::shared_ptr<const SessionDescription> OnRequestOffer(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-																	 const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+																	 const http::svr::ws::ws_session_info_id ws_session_info_id,
 																	 std::vector<RtcIceCandidate> *ice_candidates, bool &tcp_relay) = 0;
 
 	// A callback called when remote SDP arrives
 	virtual bool OnAddRemoteDescription(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-										const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+										const http::svr::ws::ws_session_info_id ws_session_info_id,
 										const std::shared_ptr<const SessionDescription> &offer_sdp,
-										const std::shared_ptr<const SessionDescription> &peer_sdp) = 0;
+										const std::shared_ptr<const SessionDescription> &answer_sdp) = 0;
 
 	virtual bool OnChangeRendition(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+								   const http::svr::ws::ws_session_info_id ws_session_info_id,
 								   bool change_rendition, const ov::String &rendition_name, bool change_auto, bool &auto_abr,
-								   const std::shared_ptr<const SessionDescription> &offer_sdp,
-								   const std::shared_ptr<const SessionDescription> &peer_sdp){ return false; }
+									 const std::shared_ptr<const SessionDescription> &offer_sdp,
+								   const std::shared_ptr<const SessionDescription> &answer_sdp){ return false; }
 
 	// A callback called when client ICE candidates arrive
 	virtual bool OnIceCandidate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-								const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
+								const http::svr::ws::ws_session_info_id ws_session_info_id,
 								const std::shared_ptr<RtcIceCandidate> &candidate,
 								const ov::String &username_fragment) = 0;
 
 	// A callback called when client sent stop event
 	virtual bool OnStopCommand(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
-							   const info::VHostAppName &vhost_app_name, const ov::String &host_name, const ov::String &stream_name,
-							   const std::shared_ptr<const SessionDescription> &offer_sdp,
-							   const std::shared_ptr<const SessionDescription> &peer_sdp) = 0;
+							   const http::svr::ws::ws_session_info_id ws_session_info_id,
+								 const std::shared_ptr<const SessionDescription> &offer_sdp,
+							   const std::shared_ptr<const SessionDescription> &answer_sdp) = 0;
+
+	virtual	bool OnSessionUpdate(const std::shared_ptr<http::svr::ws::WebSocketSession> &ws_session,
+					   const http::svr::ws::ws_session_info_id ws_session_info_id,
+						 bool change_video_state, bool &enable_video, bool change_audio_state, bool &enable_audio,
+					   const std::shared_ptr<const SessionDescription> &offer_sdp,
+					   const std::shared_ptr<const SessionDescription> &answer_sdp) { return false; }
 };

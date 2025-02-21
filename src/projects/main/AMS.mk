@@ -4,12 +4,10 @@ include $(DEFAULT_VARIABLES)
 LOCAL_STATIC_LIBRARIES := \
 	webrtc_publisher \
 	llhls_publisher \
-	segment_publishers \
+	hls_publisher \
 	ovt_publisher \
 	file_publisher \
-	mpegtspush_publisher \
-	rtmppush_publisher \
-	srtpush_publisher \
+	push_publisher \
 	thumbnail_publisher \
 	ovt_provider \
 	rtmp_provider \
@@ -87,7 +85,6 @@ endif
 # Enable Xilinx Media SDK
 ifeq ($(call chk_pkg_exist,libxma2api),0)
 $(call add_pkg_config,libxma2api)
-$(call add_pkg_config,libxma2plugin)
 $(call add_pkg_config,xvbm)
 $(call add_pkg_config,libxrm)
 HWACCELS_XMA_ENABLED := true

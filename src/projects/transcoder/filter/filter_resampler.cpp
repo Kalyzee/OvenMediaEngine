@@ -104,6 +104,7 @@ bool FilterResampler::InitializeFilterDescription()
 	std::vector<ov::String> filters;
 
 	filters.push_back(ov::String::FormatString("asettb=%s", _output_track->GetTimeBase().GetStringExpr().CStr()));
+	filters.push_back(ov::String::FormatString("aresample=async=1000"));
 	filters.push_back(ov::String::FormatString("aresample=%d", _output_track->GetSampleRate()));
 	filters.push_back(ov::String::FormatString("aformat=sample_fmts=%s:channel_layouts=%s", _output_track->GetSample().GetName(), _output_track->GetChannel().GetName()));
 	filters.push_back(ov::String::FormatString("asetnsamples=n=%d", _output_track->GetAudioSamplesPerFrame()));
@@ -221,8 +222,6 @@ void FilterResampler::Stop()
 
 void FilterResampler::WorkerThread()
 {
-	logtd("Start resampler filter thread.");
-
 	int ret;
 
 	while (!_kill_flag)
@@ -289,10 +288,7 @@ void FilterResampler::WorkerThread()
 					continue;
 				}
 
-				if (_complete_handler != nullptr && _kill_flag == false)
-				{
-					_complete_handler(std::move(output_frame));
-				}
+				Complete(std::move(output_frame));
 			}
 		}
 	}

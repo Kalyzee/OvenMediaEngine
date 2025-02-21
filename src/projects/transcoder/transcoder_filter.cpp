@@ -23,8 +23,6 @@ bool TranscodeFilter::Configure(int32_t id,
 								const std::shared_ptr<info::Stream>& output_stream_info, std::shared_ptr<MediaTrack> output_track,
 								CompleteHandler complete_handler)
 {
-	logtd("Create a transcode filter. Track(%d -> %d). Type(%s)", input_track->GetId(), output_track->GetId(), (input_track->GetMediaType() == MediaType::Video) ? "Video" : "Audio");
-
 	_id = id;
 	_input_stream_info = input_stream_info;
 	_input_track = input_track;
@@ -101,9 +99,10 @@ bool TranscodeFilter::SendBuffer(std::shared_ptr<MediaFrame> buffer)
 		if (Create() == false)
 		{
 			logte("Failed to regenerate filter");
-
 			return false;
 		}
+
+		return true;
 	}
 
 	std::shared_lock<std::shared_mutex> lock(_mutex);
