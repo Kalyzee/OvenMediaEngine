@@ -15,7 +15,7 @@
 
 #include "hls_stream.h"
 
-class HlsApplication : public pub::Application
+class HlsApplication final : public pub::Application
 {
 public:
 	static std::shared_ptr<HlsApplication> Create(const std::shared_ptr<pub::Publisher> &publisher, const info::Application &application_info);
@@ -41,5 +41,5 @@ private:
 	bool DeleteStream(const std::shared_ptr<info::Stream> &info) override;
 
 	http::CorsManager _cors_manager;
-	bool _origin_mode = false;
+	bool _origin_mode = true;
 };

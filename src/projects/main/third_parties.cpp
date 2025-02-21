@@ -15,6 +15,8 @@
 #	include <jemalloc/jemalloc.h>
 #endif	// !DEBUG
 
+#include <spdlog/spdlog.h>
+
 #include <regex>
 
 //--------------------------------------------------------------------
@@ -208,6 +210,21 @@ static void SrtLogHandler(void *opaque, int level, const char *file, int line, c
 		mess = message;
 	}
 
+	// Suppress the following message:
+	//   12:34:56.012345/xxxxx*E:SRT.cn: srt_accept: no pending connection available at the moment
+	//
+	// When `SRT_EPOLL_ET` is enabled and clients connect simultaneously,
+	// `srt_accept()` must be called multiple times to accommodate the client's connections.
+	// In this normal scenario, there is no way to avoid the error log below.
+	//
+	// It seems that the SRT developers consider this to be normal behavior.
+	// (https://github.com/Haivision/srt/discussions/2768)
+	if (mess.IndexOf("srt_accept: no pending connection available at the moment") >= 0)
+	{
+		// Ignore this message
+		return;
+	}
+
 	const char *SRT_LOG_TAG = "SRT";
 	ov::String new_file = file;
 	new_file.Append("@SRT");
@@ -314,4 +331,16 @@ const char *GetJemallocVersion()
 #else	// !DEBUG
 	return "(disabled)";
 #endif	// !DEBUG
+}
+
+const char *GetSpdlogVersion()
+{
+	static char version[32]{0};
+
+	if (version[0] == '\0')
+	{
+		::snprintf(version, sizeof(version), "%d.%d.%d", SPDLOG_VER_MAJOR, SPDLOG_VER_MINOR, SPDLOG_VER_PATCH);
+	}
+
+	return version;
 }

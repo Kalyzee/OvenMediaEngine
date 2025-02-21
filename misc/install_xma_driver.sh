@@ -43,7 +43,7 @@ echo ${CURRENT}
 install_xma_props_to_json_xrm()
 {
     # https://github.com/Xilinx/app-xma-props-to-json-xrm/tree/U30_GA_3
-
+    sudo apt -y install curl
 
     (DIR=${TEMP_PATH}/xmaPropsTojson && \
     mkdir -p ${DIR} && \
@@ -59,10 +59,14 @@ install_xma_props_to_json_xrm()
 
 install_videosdk_ubuntu()
 {
+    # Adding Xilinx public key
+    sudo apt-get -y install gnupg2
+    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys FD3DD2C355D2B701
+
     # Fixed xilinx driver installation not working properly on Ubuntu 20.04.
     if [ "${OSVERSION}" == "20" ]; then
         sudo apt -y install software-properties-common
-        sudo add-apt-repository -y ppa:gpxbv/apt-urlfix
+        # sudo add-apt-repository -y ppa:gpxbv/apt-urlfix
         sudo apt -y autoremove
         sudo apt -y install apt apt-utils
     fi
@@ -70,8 +74,11 @@ install_videosdk_ubuntu()
     # Added resositroty
     # https://xilinx.github.io/video-sdk/v3.0/package_feed.html
     CODE_NAME=$(lsb_release -c -s)
-    echo deb [trusted=yes] https://packages.xilinx.com/artifactory/debian-packages ${CODE_NAME} main > xilinx.list
-    sudo cp xilinx.list /etc/apt/sources.list.d/
+    # Official repository
+    echo "deb [trusted=yes] https://packages.xilinx.com/artifactory/debian-packages ${CODE_NAME} main" | sudo tee /etc/apt/sources.list.d/xilinx.list
+    # Mirror repository
+    # echo "deb [trusted=yes] http://xilinx-repo-mirror.ovenmediaengine.com/artifactory/debian-packages ${CODE_NAME} main" | sudo tee /etc/apt/sources.list.d/xilinx.list
+
 
     # Remove older versions of the Xilinx Video SDK
     sudo apt-get -y remove xvbm xilinx-u30-xvbm xrmu30decoder xrmu30scaler xrmu30encoder xmpsoccodecs xmultiscaler xlookahead xmaapps xmapropstojson xffmpeg launcher jobslotreservation xcdr
@@ -80,7 +87,7 @@ install_videosdk_ubuntu()
     # Install Required packages
     sudo apt-get -y update
     sudo apt-get -y install cmake pkg-config
-    sudo apt-get -y --allow-change-held-packages install xrt=2.11.722
+    sudo apt-get -y install xrt=2.11.722
     sudo apt-mark hold xrt
     sudo apt-get -y install xilinx-alveo-u30-core
 

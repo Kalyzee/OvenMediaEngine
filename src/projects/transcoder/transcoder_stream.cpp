@@ -134,7 +134,9 @@ bool TranscoderStream::Stop()
 
 	logtd("%s Wait for stream thread to terminated", _log_prefix.CStr());
 
-	RemoveAllComponents();
+	RemoveDecoders();
+	RemoveFilters();
+	RemoveEncoders();
 
 	// Delete all composite of components
 	_link_input_to_outputs.clear();
@@ -229,7 +231,7 @@ bool TranscoderStream::PrepareInternal()
 		logti("No decoder generated");
 	}
 
-	StoreInputTrackSnapshot(_input_stream);
+	StoreTracks(_input_stream);
 
 	return true;
 }
@@ -240,78 +242,122 @@ bool TranscoderStream::UpdateInternal(const std::shared_ptr<info::Stream> &strea
 	// [Rule]
 	// - The number of tracks per media type should not exceed one.
 	// - The input track should not change.
-	if (IsAvailableSmoothTransition(stream) == true)
+	_is_updating = true;
+
+	if (CanSeamlessTransition(stream) == true)
 	{
-		logti("%s This stream will be a smooth transition", _log_prefix.CStr());
+		logtd("%s This stream support seamless transitions", _log_prefix.CStr());
+		FlushBuffers();
+
 		RemoveDecoders();
 		RemoveFilters();
-		
+
 		CreateDecoders();
 	}
 	else
 	{
-		logti("%s This stream does not support smooth transitions. renew the all components", _log_prefix.CStr());
-		RemoveAllComponents();
-		
+		logtw("%s This stream does not support seamless transitions. Renewing all", _log_prefix.CStr());
+
+		FlushBuffers();
+
+		RemoveDecoders();
+		RemoveFilters();
+		RemoveEncoders();
+
 		CreateDecoders();
 
 		UpdateMsidOfOutputStreams(stream->GetMsid());
 		NotifyUpdateStreams();
 
-		StoreInputTrackSnapshot(stream);
+		StoreTracks(stream);
 	}
+
+	_is_updating = false;
 
 	return true;
 }
 
-void TranscoderStream::RemoveAllComponents()
+void TranscoderStream::FlushBuffers()
 {
-	// Stop all decoder
-	RemoveDecoders();
-	
-	// Stop all filters
-	RemoveFilters();
-	
-	// Stop all encoders
-	RemoveEncoders();
+	for (auto &[id, object] : _encoders)
+	{
+		auto filter = object.first;
+		if (filter != nullptr)
+		{
+			filter->Flush();
+		}
+
+		auto encoder = object.second;
+		if (encoder != nullptr)
+		{
+			encoder->Flush();
+		}
+	}
 }
 
 void TranscoderStream::RemoveDecoders()
 {
-	std::lock_guard<std::shared_mutex> decoder_lock(_decoder_map_mutex);
-	
-	for (auto &it : _decoders)
-	{
-		auto object = it.second;
-		object->Stop();
-		object.reset();
-	}
+	std::unique_lock<std::shared_mutex> decoder_lock(_decoder_map_mutex);
+
+	auto decoders = _decoders;
 	_decoders.clear();
+
+	decoder_lock.unlock();
+
+	for (auto &[id, object] : decoders)
+	{
+		if (object != nullptr)
+		{
+			object->Stop();
+			object.reset();
+		}
+	}
 }
 
 void TranscoderStream::RemoveFilters()
 {
-	std::lock_guard<std::shared_mutex> filter_lock(_filter_map_mutex);
-	
-	for (auto &it : _filters)
-	{
-		auto object = it.second;
-		object->Stop();
-		object.reset();
-	}
+	std::unique_lock<std::shared_mutex> filter_lock(_filter_map_mutex);
+
+	auto filters = _filters;
 	_filters.clear();
+
+	filter_lock.unlock();
+
+	for (auto &[id, object] : filters)
+	{
+		if (object != nullptr)
+		{
+			object->Stop();
+			object.reset();
+		}
+	}
 }
 
 void TranscoderStream::RemoveEncoders()
 {
-	std::lock_guard<std::shared_mutex> encoder_lock(_encoder_map_mutex);
-	for (auto &iter : _encoders)
-	{
-		auto object = iter.second;
-		object->Stop();
-		object.reset();
-	}
+	std::unique_lock<std::shared_mutex> encoder_lock(_encoder_map_mutex);
+	
+	auto encoders = _encoders;
 	_encoders.clear();
+	
+	encoder_lock.unlock();
+
+	for (auto &[id, object] : encoders)
+	{
+		auto filter = object.first;
+		if (filter != nullptr)
+		{
+			filter->Stop();
+			filter.reset();
+		}
+
+		auto encoder = object.second;
+		if (encoder != nullptr)
+		{
+			encoder->Stop();
+			encoder.reset();
+		}
+	}
 }
 
 std::shared_ptr<MediaTrack> TranscoderStream::GetInputTrack(MediaTrackId track_id)
@@ -343,24 +389,12 @@ std::shared_ptr<info::Stream> TranscoderStream::GetOutputStreamByTrackId(MediaTr
 	return nullptr;
 }
 
-bool TranscoderStream::IsAvailableSmoothTransition(const std::shared_ptr<info::Stream> &input_stream)
+bool TranscoderStream::CanSeamlessTransition(const std::shared_ptr<info::Stream> &input_stream)
 {
-	// #1. The number of tracks per media type should not exceed one.
-	int32_t track_count_per_mediatype[(uint32_t)cmn::MediaType::Nb] = {0};
-	for (const auto &[track_id, track] : input_stream->GetTracks())
-	{
-		UNUSED_VARIABLE(track_id)
-		
-		if ((++track_count_per_mediatype[(uint32_t)track->GetMediaType()]) > 1)
-		{
-			// Could not support smooth transition. because, number of tracks per media type exceed one.
-			logtw("%s Smooth transitions are not possible because the number of tracks per media type exceeds one.", _log_prefix.CStr());
-			return false;
-		}
-	}
+	auto new_tracks = input_stream->GetTracks();
 
-	// #2. Check if the number and type of original tracks are different.
-	if(IsEqualCountAndMediaTypeOfMediaTracks(input_stream->GetTracks(), GetInputTrackSnapshot()) == false)
+	// Check if the number and type of original tracks are different.
+	if(CompareTracksForSeamlessTransition(new_tracks, GetStoredTracks()) == false)
 	{
 		logtw("%s The input track has changed. It does not support smooth transitions.", _log_prefix.CStr());
 		return false;
@@ -378,7 +412,7 @@ bool TranscoderStream::Push(std::shared_ptr<MediaPacket> packet)
 			SendBufferedPackets();
 		}
 
-		DecodePacket(std::move(packet));
+		ProcessPacket(std::move(packet));
 	}
 	else if (GetState() == State::CREATED || GetState() == State::PREPARING)
 	{
@@ -418,7 +452,7 @@ bool TranscoderStream::SendBufferedPackets()
 
 		auto media_packet = buffered_media_packet.value();
 	
-		DecodePacket(std::move(media_packet));
+		ProcessPacket(std::move(media_packet));
 	}
 
 	return true;
@@ -475,8 +509,7 @@ int32_t TranscoderStream::CreateOutputStreams()
 	int32_t created_count = 0;
 
 	// Get the output profile to make the output stream
-	auto cfg_output_profile = GetOutputProfilesCfg();
-	auto cfg_output_profile_list = cfg_output_profile->GetOutputProfileList();
+	auto cfg_output_profile_list = GetOutputProfilesCfg()->GetOutputProfileList();
 	
 	for (const auto &profile : cfg_output_profile_list)
 	{
@@ -522,18 +555,6 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 	}
 	output_stream->SetName(name);
 
-	// Playlist
-	bool is_parsed = false;
-	auto cfg_playlists = cfg_output_profile.GetPlaylists(&is_parsed);
-	if (is_parsed)
-	{
-		for (const auto &cfg_playlist : cfg_playlists)
-		{
-			auto playlist_info = cfg_playlist.GetPlaylistInfo();
-			output_stream->AddPlaylist(playlist_info);
-		}
-	}
-
 	// Create a Output Track
 	for (auto &[input_track_id, input_track] : _input_stream->GetTracks())
 	{
@@ -546,7 +567,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 					auto output_track = CreateOutputTrack(input_track, profile);
 					if (output_track == nullptr)
 					{
-						logtw("Failed to create media tracks. Encoding options need to be checked. track_id(%d)", input_track_id);
+						logtw("Failed to create media tracks. Encoding options need to be checked. InputTrack(%d)", input_track_id);
 						continue;
 					}
 
@@ -561,7 +582,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 					auto output_track = CreateOutputTrack(input_track, profile);
 					if (output_track == nullptr)
 					{
-						logtw("Failed to create media tracks. Encoding options need to be checked. track_id(%d)", input_track_id);
+						logtw("Failed to create media tracks. Encoding options need to be checked. InputTrack(%d)", input_track_id);
 						continue;
 					}
 
@@ -578,7 +599,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 					auto output_track = CreateOutputTrack(input_track, profile);
 					if (output_track == nullptr)
 					{
-						logtw("Failed to create media tracks. Encoding options need to be checked. track_id(%d)", input_track_id);
+						logtw("Failed to create media tracks. Encoding options need to be checked. InputTrack(%d)", input_track_id);
 						continue;
 					}
 
@@ -594,7 +615,7 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 					auto output_track = CreateOutputTrackDataType(input_track);
 					if (output_track == nullptr)
 					{
-						logtw("Failed to create media tracks. Encoding options need to be checked. track_id(%d)", input_track_id);
+						logtw("Failed to create media tracks. Encoding options need to be checked. InputTrack(%d)", input_track_id);
 						continue;
 					}
 
@@ -608,9 +629,151 @@ std::shared_ptr<info::Stream> TranscoderStream::CreateOutputStream(const cfg::vh
 				continue;
 			}
 		}
-	}	
+	}
+
+	// Playlist
+	bool is_parsed = false;
+	auto cfg_playlists = cfg_output_profile.GetPlaylists(&is_parsed);
+	if (is_parsed)
+	{
+		for (const auto &cfg_playlist : cfg_playlists)
+		{
+			auto playlist_info = cfg_playlist.GetPlaylistInfo();
+
+			// Create renditions with RenditionTemplate
+			auto rendition_templates = cfg_playlist.GetRenditionTemplates();
+			auto tracks = output_stream->GetTracks();
+
+			for (const auto &rendition_template : rendition_templates)
+			{
+				bool has_video_template = false, has_audio_template = false;
+				auto video_template = rendition_template.GetVideoTemplate(&has_video_template);
+				auto audio_template = rendition_template.GetAudioTemplate(&has_audio_template);
+
+				std::vector<std::shared_ptr<MediaTrack>> matched_video_tracks, matched_audio_tracks;
+
+				if (has_video_template)
+				{
+					for (const auto &[track_id, track] : tracks)
+					{
+						if (video_template.IsMatched(track) == false)
+						{
+							continue;
+						}
+
+						// Separate the Track from the existing Variant group.
+						matched_video_tracks.push_back(track);
+					}
+				}
+				
+				if (has_audio_template)
+				{
+					// Do not separate the Audio track group. (Used as Multilingual)
+					for (const auto &[group_name, group] : output_stream->GetMediaTrackGroups())
+					{
+						auto track = group->GetFirstTrack();
+						if (audio_template.IsMatched(track) == false)
+						{
+							continue;
+						}
+
+						matched_audio_tracks.push_back(track);
+					}
+				}
+
+				if (matched_video_tracks.empty() && matched_audio_tracks.empty())
+				{
+					logtw("No matched tracks for the rendition template (%s).", rendition_template.GetName().CStr());
+					continue;
+				}
+
+				if (matched_video_tracks.empty() == false && matched_audio_tracks.empty() == false)
+				{
+					for (const auto &video_track : matched_video_tracks)
+					{
+						for (const auto &audio_track : matched_audio_tracks)
+						{
+							// Make Rendition Name
+							ov::String rendition_name = MakeRenditionName(rendition_template.GetName(), playlist_info, video_track, audio_track);
+							
+							auto rendition = std::make_shared<info::Rendition>(rendition_name, video_track->GetVariantName(), audio_track->GetVariantName());
+							rendition->SetVideoIndexHint(video_track->GetGroupIndex());
+							rendition->SetAudioIndexHint(audio_track->GetGroupIndex());
+
+							playlist_info->AddRendition(rendition);
+
+							logti("Rendition(%s) has been created from template in Playlist(%s) : video(%s/%d), audio(%s%d)", rendition_name.CStr(), playlist_info->GetName().CStr(), video_track->GetPublicName().CStr(), video_track->GetGroupIndex(), audio_track->GetPublicName().CStr(), audio_track->GetGroupIndex());
+						}
+					}
+				}
+				else if (matched_video_tracks.empty() == false)
+				{
+					for (const auto &video_track : matched_video_tracks)
+					{
+						// Make Rendition Name
+						ov::String rendition_name = MakeRenditionName(rendition_template.GetName(), playlist_info, video_track, nullptr);
+						auto rendition = std::make_shared<info::Rendition>(rendition_name, video_track->GetVariantName(), "");
+						rendition->SetVideoIndexHint(video_track->GetGroupIndex());
+
+						playlist_info->AddRendition(rendition);
+
+						logti("Rendition(%s) has been created from template in Playlist(%s) : video(%s/%d)", rendition_name.CStr(), playlist_info->GetName().CStr(), video_track->GetPublicName().CStr(), video_track->GetGroupIndex());
+					}
+				}
+				else if (matched_audio_tracks.empty() == false)
+				{
+					for (const auto &audio_track : matched_audio_tracks)
+					{
+						// Make Rendition Name
+						ov::String rendition_name = MakeRenditionName(rendition_template.GetName(), playlist_info, nullptr, audio_track);
+
+						auto rendition = std::make_shared<info::Rendition>(rendition_name, "", audio_track->GetVariantName());
+						rendition->SetAudioIndexHint(audio_track->GetGroupIndex());
+
+						playlist_info->AddRendition(rendition);
+
+						logti("Rendition(%s) has been created from template in Playlist(%s) : audio(%s/%d)", rendition_name.CStr(), playlist_info->GetName().CStr(), audio_track->GetPublicName().CStr(), audio_track->GetGroupIndex());
+					}
+				}
+			}
+
+			logti("Playlist(%s) has been created", playlist_info->GetName().CStr());
+			logti("%s", playlist_info->ToString().CStr());
+
+			output_stream->AddPlaylist(playlist_info);
+		}
+	}
 
 	return output_stream;
+}
+
+ov::String TranscoderStream::MakeRenditionName(const ov::String &name_template, const std::shared_ptr<info::Playlist> &playlist_info, const std::shared_ptr<MediaTrack> &video_track, const std::shared_ptr<MediaTrack> &audio_track)
+{
+	ov::String rendition_name = name_template;
+
+	if (video_track != nullptr)
+	{
+		rendition_name = rendition_name.Replace("${Width}", ov::String::FormatString("%d", video_track->GetWidth()).CStr());
+		rendition_name = rendition_name.Replace("${Height}", ov::String::FormatString("%d", video_track->GetHeight()).CStr());
+		rendition_name = rendition_name.Replace("${Bitrate}", ov::String::FormatString("%d", video_track->GetBitrate()).CStr());
+		rendition_name = rendition_name.Replace("${Framerate}", ov::String::FormatString("%d", video_track->GetFrameRate()).CStr());
+	}
+
+	if (audio_track != nullptr)
+	{
+		rendition_name = rendition_name.Replace("${Samplerate}", ov::String::FormatString("%d", audio_track->GetSampleRate()).CStr());
+		rendition_name = rendition_name.Replace("${Channel}", ov::String::FormatString("%u", audio_track->GetChannel().GetCounts()).CStr());
+	}
+
+	// Check if the rendition name is duplicated
+	uint32_t rendition_index = 0;
+	ov::String unique_rendition_name = rendition_name;
+	while (playlist_info->GetRendition(unique_rendition_name) != nullptr)
+	{
+		unique_rendition_name = ov::String::FormatString("%s_%d", rendition_name.CStr(), ++rendition_index);
+	}
+
+	return unique_rendition_name;
 }
 
 int32_t TranscoderStream::BuildComposite()
@@ -630,10 +793,12 @@ int32_t TranscoderStream::BuildComposite()
 
 		for (auto &[output_stream, output_track] : composite->GetOutputTracks())
 		{
+			auto output_stream_and_track = std::make_pair(output_stream, output_track->GetId());
+
 			// Bypass Flow: InputTrack -> OutputTrack
 			if (output_track->IsBypass() == true)
 			{
-				_link_input_to_outputs[input_track_id].push_back(make_pair(output_stream, output_track->GetId()));
+				_link_input_to_outputs[input_track_id].push_back(output_stream_and_track);
 			}
 			// Transcoding Flow: InputTrack -> Decoder -> Filter -> Encoder -> OutputTrack
 			else
@@ -652,7 +817,7 @@ int32_t TranscoderStream::BuildComposite()
 				_link_filter_to_encoder[filter_id] = encoder_id;
 
 				// Flushing: Encoder(1) -> OutputTrack (N)
-				_link_encoder_to_outputs[encoder_id].push_back(make_pair(output_stream, output_track->GetId()));
+				_link_encoder_to_outputs[encoder_id].push_back(output_stream_and_track);
 			}
 		}
 
@@ -786,23 +951,30 @@ int32_t TranscoderStream::CreateDecoders()
 
 bool TranscoderStream::CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<info::Stream> input_stream, std::shared_ptr<MediaTrack> input_track)
 {
-	std::lock_guard<std::shared_mutex> decoder_lock(_decoder_map_mutex);
-
-	// If there is an existing decoder, do not create decoder
-	if (_decoders.find(decoder_id) != _decoders.end())
+	if(GetDecoder(decoder_id) != nullptr)
 	{
 		logtw("%s Decoder already exists. InputTrack(%d) > Decoder(%d)", _log_prefix.CStr(), input_track->GetId(), decoder_id);
-
 		return true;
 	}
 
-	// Get HWAccels configuration
-	auto cfg_hwaccels = GetOutputProfilesCfg()->GetHWAccels();
+	// Set the keyframe decode only flag for the decoder.
+	if (input_track->GetMediaType() == cmn::MediaType::Video &&
+		GetOutputProfilesCfg()->GetDecodes().IsOnlyKeyframes() == true)
+	{
+		input_track->SetKeyframeDecodeOnly(IsKeyframeOnlyDecodable(_output_streams));
+	}
+
+	// Set the thread count for the decoder.
+	input_track->SetThreadCount(GetOutputProfilesCfg()->GetDecodes().GetThreadCount());
+
+	auto hwaccels_enable = GetOutputProfilesCfg()->GetHWAccels().GetDecoder().IsEnable() ||
+						   GetOutputProfilesCfg()->IsHardwareAcceleration();  // Deprecated
+
+	auto hwaccels_modules = GetOutputProfilesCfg()->GetHWAccels().GetDecoder().GetModules();
 
 	// Get a list of available decoder candidates.
-	// TODO: GetOutputProfilesCfg()->IsHardwareAcceleration() is deprecated. It will be deleted soon.
-	auto candidates = TranscodeDecoder::GetCandidates(cfg_hwaccels.GetDecoder().IsEnable() || GetOutputProfilesCfg()->IsHardwareAcceleration(), cfg_hwaccels.GetDecoder().GetModules(), input_track);
-	if(candidates == nullptr)
+	auto candidates = TranscodeDecoder::GetCandidates(hwaccels_enable, hwaccels_modules, input_track);
+	if (candidates == nullptr)
 	{
 		logte("%s Decoder candidates are not found. InputTrack(%u)", _log_prefix.CStr(), input_track->GetId());
 		return false;
@@ -811,7 +983,7 @@ bool TranscoderStream::CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<in
 	// Create a decoder
 	auto decoder = TranscodeDecoder::Create(
 		decoder_id,
-		*(input_stream),
+		input_stream,
 		input_track,
 		candidates,
 		bind(&TranscoderStream::OnDecodedFrame, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
@@ -821,14 +993,32 @@ bool TranscoderStream::CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<in
 		return false;
 	}
 
-	_decoders[decoder_id] = std::move(decoder);
+	SetDecoder(decoder_id, decoder);
 
 	logtd("%s Created decoder. InputTrack(%u) > Decoder(%u)", _log_prefix.CStr(), input_track->GetId(), decoder_id);
 
 	return true;
 }
 
-int32_t TranscoderStream::CreateEncoders(MediaFrame *buffer)
+std::shared_ptr<TranscodeDecoder> TranscoderStream::GetDecoder(MediaTrackId decoder_id)
+{
+	std::shared_lock<std::shared_mutex> decoder_lock(_decoder_map_mutex);
+	if (_decoders.find(decoder_id) == _decoders.end())
+	{
+		return nullptr;
+	}
+
+	return _decoders[decoder_id];
+}
+
+void TranscoderStream::SetDecoder(MediaTrackId decoder_id, std::shared_ptr<TranscodeDecoder> decoder)
+{
+	std::unique_lock<std::shared_mutex> decoder_lock(_decoder_map_mutex);
+
+	_decoders[decoder_id] = decoder;
+}
+
+int32_t TranscoderStream::CreateEncoders(std::shared_ptr<MediaFrame> buffer)
 {
 	int32_t created = 0;
 	MediaTrackId track_id = buffer->GetTrackId();
@@ -865,21 +1055,6 @@ int32_t TranscoderStream::CreateEncoders(MediaFrame *buffer)
 				continue;
 			}
 
-			// Set the sample format and color space supported by the encoder to the output track.
-			// These values are used in the Resampler/Rescaler filter.
-			if (output_track->GetMediaType() == cmn::MediaType::Video)
-			{
-				auto encoder = _encoders[encoder_id];
-
-				output_track->SetColorspace(encoder->GetSupportedFormat());
-			}
-			else if (output_track->GetMediaType() == cmn::MediaType::Audio)
-			{
-				auto encoder = _encoders[encoder_id];
-
-				output_track->GetSample().SetFormat(ffmpeg::Conv::ToAudioSampleFormat(encoder->GetSupportedFormat()));
-			}
-
 			created++;
 		}
 	}
@@ -889,73 +1064,139 @@ int32_t TranscoderStream::CreateEncoders(MediaFrame *buffer)
 
 bool TranscoderStream::CreateEncoder(MediaTrackId encoder_id, std::shared_ptr<info::Stream> output_stream, std::shared_ptr<MediaTrack> output_track)
 {
-	std::lock_guard<std::shared_mutex> encoder_lock(_encoder_map_mutex);
-
-	if (_encoders.find(encoder_id) != _encoders.end())
+	if (GetEncoder(encoder_id).has_value())
 	{
-		logtd("%s The encoder has already created. Encoder(%d) > OutputTrack(%d)", _log_prefix.CStr(), encoder_id, output_track->GetId());
+		logtd("%s Encoder already exists. Encoder(%d)", _log_prefix.CStr(), encoder_id);
 		return true;
 	}
 
-	// Get HWAccels configuration
-	auto cfg_hwaccels = GetOutputProfilesCfg()->GetHWAccels();
+	auto hwaccels_enable = GetOutputProfilesCfg()->GetHWAccels().GetEncoder().IsEnable() ||
+						   GetOutputProfilesCfg()->IsHardwareAcceleration();  // Deprecated
+
+	auto hwaccels_modules = GetOutputProfilesCfg()->GetHWAccels().GetEncoder().GetModules();
 
 	// Get a list of available encoder candidates.
-	// TODO: GetOutputProfilesCfg()->IsHardwareAcceleration() is deprecated. It will be deleted soon.
-	auto candidates = TranscodeEncoder::GetCandidates(cfg_hwaccels.GetEncoder().IsEnable() || GetOutputProfilesCfg()->IsHardwareAcceleration(), cfg_hwaccels.GetEncoder().GetModules(), output_track);
-	if(candidates == nullptr)
+	auto candidates = TranscodeEncoder::GetCandidates(hwaccels_enable, hwaccels_modules, output_track);
+	if (candidates == nullptr)
 	{
 		logte("%s Decoder candidates are not found. InputTrack(%d)", _log_prefix.CStr(), output_track->GetId());
 		return false;
 	}
 
-	auto encoder = TranscodeEncoder::Create(encoder_id, *output_stream, output_track, candidates, bind(&TranscoderStream::OnEncodedPacket, this, std::placeholders::_1, std::placeholders::_2));
+	// Create Encoder
+	auto encoder = TranscodeEncoder::Create(encoder_id, output_stream, output_track, candidates,
+											bind(&TranscoderStream::OnEncodedPacket, this, std::placeholders::_1, std::placeholders::_2));
 	if (encoder == nullptr)
 	{
 		return false;
 	}
 
-	_encoders[encoder_id] = std::move(encoder);
+	// Set the sample format and color space supported by the encoder to the output track.
+	// These values are used in the Resampler/Rescaler filter.
+	if (output_track->GetMediaType() == cmn::MediaType::Video)
+	{
+		output_track->SetColorspace(encoder->GetSupportedFormat());
+	}
+	else if (output_track->GetMediaType() == cmn::MediaType::Audio)
+	{
+		output_track->GetSample().SetFormat(ffmpeg::Conv::ToAudioSampleFormat(encoder->GetSupportedFormat()));
+	}
+
+	// Create Paired Filter
+	std::shared_ptr<TranscodeFilter> filter = nullptr;
+	if(output_track->GetMediaType() == cmn::MediaType::Audio)
+	{
+		filter = TranscodeFilter::Create(encoder_id, output_stream, output_track,
+										 bind(&TranscoderStream::OnPreEncodeFilteredFrame, this, std::placeholders::_1, std::placeholders::_2));
+		if (filter == nullptr)
+		{
+			// Stop & Release Encoder
+			encoder->Stop();
+			encoder.reset();
+
+			return false;
+		}
+	}
+
+	SetEncoder(encoder_id, filter, encoder);
 
 	logtd("%s Created encoder. Encoder(%d) > OutputTrack(%d)", _log_prefix.CStr(), encoder_id, output_track->GetId());
+
 	return true;
 }
 
+std::optional<std::pair<std::shared_ptr<TranscodeFilter>, std::shared_ptr<TranscodeEncoder>>> TranscoderStream::GetEncoder(MediaTrackId encoder_id)
+{
+	std::shared_lock<std::shared_mutex> encoder_lock(_encoder_map_mutex);
+	if (_encoders.find(encoder_id) == _encoders.end())
+	{
+		return std::nullopt;
+	}
 
-int32_t TranscoderStream::CreateFilters(MediaFrame *buffer)
+	return _encoders[encoder_id];
+}
+
+void TranscoderStream::SetEncoder(MediaTrackId encoder_id, std::shared_ptr<TranscodeFilter> filter, std::shared_ptr<TranscodeEncoder> encoder)
+{
+	std::unique_lock<std::shared_mutex> encoder_lock(_encoder_map_mutex);
+
+	_encoders[encoder_id] = std::make_pair(filter, encoder);
+}
+
+int32_t TranscoderStream::CreateFilters(std::shared_ptr<MediaFrame> buffer)
 {
 	int32_t created = 0;
 
 	MediaTrackId decoder_id = buffer->GetTrackId();
 
-	// 1. Get Input Track of Decoder
-	auto input_track = _decoders[decoder_id]->GetRefTrack();
-
+	// 1. Get Decoder -> Filter List
 	auto decoder_to_filters_it = _link_decoder_to_filters.find(decoder_id);
 	if (decoder_to_filters_it == _link_decoder_to_filters.end())
-	{
+	{ 
 		logtw("%s Could not found filter list related to decoder", _log_prefix.CStr());
 
 		return created;
 	}
-	auto filter_ids = decoder_to_filters_it->second;
 
 	// 2. Get Output Track of Encoders
+	auto filter_ids = decoder_to_filters_it->second;
 	for (auto &filter_id : filter_ids)
 	{
 		MediaTrackId encoder_id = _link_filter_to_encoder[filter_id];
-		if (_encoders.find(encoder_id) == _encoders.end())
+		auto encoder_set = GetEncoder(encoder_id);
+		if(encoder_set.has_value() == false)
 		{
-			logte("%s Filter creation failed because the encoder could not be found. EncoderId(%d), FilterId(%d)", _log_prefix.CStr(), encoder_id, filter_id);
+			logte("%s Failed to create filter. could not found encoder set. Encoder(%d), Filter(%d)", _log_prefix.CStr(), encoder_id, filter_id);
 			continue;
 		}
 
-		auto output_track = _encoders[encoder_id]->GetRefTrack();
+		auto encoder = encoder_set->second;
+		if(encoder == nullptr)
+		{
+			logte("%s Failed to create filter. could not found encoder. Encoder(%d), Filter(%d)", _log_prefix.CStr(), encoder_id, filter_id);
+			continue;
+		}
 
-		if(CreateFilter(filter_id, input_track, output_track) == false)
+		auto decoder = GetDecoder(decoder_id);
+		if(decoder == nullptr)
+		{
+			logte("%s Failed to create filter. could not found decoder. Decoder(%d), Filter(%d)", _log_prefix.CStr(), decoder_id, filter_id);
+			continue;
+		}
+
+		auto input_track = decoder->GetRefTrack();
+		auto output_track = encoder->GetRefTrack();
+		if(input_track == nullptr || output_track == nullptr)
+		{
+			logte("%s Failed to create filter. could not found input or output track. Decoder(%d), Encoder(%d), Filter(%d)", _log_prefix.CStr(), decoder_id, encoder_id, filter_id);
+			continue;
+		}
+
+		if (CreateFilter(filter_id, input_track, output_track) == false)
 		{
 			continue;
 		}
+
 		created++;
 	}
 
@@ -964,12 +1205,9 @@ int32_t TranscoderStream::CreateFilters(MediaFrame *buffer)
 
 bool TranscoderStream::CreateFilter(MediaTrackId filter_id, std::shared_ptr<MediaTrack> input_track, std::shared_ptr<MediaTrack> output_track)
 {
-	std::lock_guard<std::shared_mutex> filter_lock(_filter_map_mutex);
-
-	if (_filters.find(filter_id) != _filters.end())
+	if(GetFilter(filter_id) != nullptr)
 	{
-		logtd("%s The filter has already created. FilterId(%d)", _log_prefix.CStr(), filter_id);
-
+		logtw("%s Filter already exists. Filter(%d)", _log_prefix.CStr(), filter_id);
 		return true;
 	}
 
@@ -987,27 +1225,44 @@ bool TranscoderStream::CreateFilter(MediaTrackId filter_id, std::shared_ptr<Medi
 		return false;
 	}
 
-	auto filter = std::make_shared<TranscodeFilter>();
-	if (filter->Configure(filter_id, input_stream, input_track, output_stream, output_track, bind(&TranscoderStream::OnFilteredFrame, this, std::placeholders::_1, std::placeholders::_2)) != true)
+	auto filter = TranscodeFilter::Create(filter_id, input_stream, input_track, output_stream, output_track, bind(&TranscoderStream::OnFilteredFrame, this, std::placeholders::_1, std::placeholders::_2));
+	if (filter == nullptr)
 	{
 		logte("%s Failed to create filter. Filter(%d)", _log_prefix.CStr(), filter_id);
 		return false;
 	}
 
-	_filters[filter_id] = filter;
+	SetFilter(filter_id, filter);
 
-	logtd("%s Created Filter. FilterId(%d)", _log_prefix.CStr(), filter_id);
+	logtd("%s Created Filter. Filter(%d)", _log_prefix.CStr(), filter_id);
 
 	return true;
 }
 
+std::shared_ptr<TranscodeFilter> TranscoderStream::GetFilter(MediaTrackId filter_id)
+{
+	std::shared_lock<std::shared_mutex> lock(_filter_map_mutex);
+	if (_filters.find(filter_id) == _filters.end())
+	{
+		return nullptr;
+	}
+
+	return _filters[filter_id];
+}
+
+void TranscoderStream::SetFilter(MediaTrackId filter_id, std::shared_ptr<TranscodeFilter> filter)
+{
+	std::unique_lock<std::shared_mutex> lock(_filter_map_mutex);
+
+	_filters[filter_id] = filter;
+}
 
 // Function called when codec information is extracted or changed from the decoder
-void TranscoderStream::ChangeOutputFormat(MediaFrame *buffer)
+void TranscoderStream::ChangeOutputFormat(std::shared_ptr<MediaFrame> buffer)
 {
 	logtd("%s Changed output format. InputTrack(%u)", _log_prefix.CStr(), buffer->GetTrackId());
 
-	std::lock_guard<std::shared_mutex> lock(_format_change_mutex);
+	std::unique_lock<std::shared_mutex> lock(_format_change_mutex);
 
 	if (buffer == nullptr)
 	{
@@ -1026,7 +1281,7 @@ void TranscoderStream::ChangeOutputFormat(MediaFrame *buffer)
 	{
 		logtw("%s No encoders have been created. InputTrack(%u)", _log_prefix.CStr(), buffer->GetTrackId());
 
-		SetState(State::ERROR);
+		// SetState(State::ERROR);
 		return;
 	}
 
@@ -1035,13 +1290,14 @@ void TranscoderStream::ChangeOutputFormat(MediaFrame *buffer)
 	{
 		logtw("%s No filters have been created. InputTrack(%u)", _log_prefix.CStr(), buffer->GetTrackId());
 		
-		SetState(State::ERROR);
+		// SetState(State::ERROR);
 		return;
 	}
+
 }
 
 // Information of the input track is updated by the decoded frame
-void TranscoderStream::UpdateInputTrack(MediaFrame *buffer)
+void TranscoderStream::UpdateInputTrack(std::shared_ptr<MediaFrame> buffer)
 {
 	MediaTrackId track_id = buffer->GetTrackId();
 
@@ -1079,7 +1335,7 @@ void TranscoderStream::UpdateInputTrack(MediaFrame *buffer)
 }
 
 // Update Output Track
-void TranscoderStream::UpdateOutputTrack(MediaFrame *buffer)
+void TranscoderStream::UpdateOutputTrack(std::shared_ptr<MediaFrame> buffer)
 {
 	MediaTrackId input_track_id = buffer->GetTrackId();
 
@@ -1100,7 +1356,7 @@ void TranscoderStream::UpdateOutputTrack(MediaFrame *buffer)
 		{
 			UNUSED_VARIABLE(output_stream)
 
-			logtd("%s Updated output track. InputTrack(%u), OutputTrack(%u)", _log_prefix.CStr(), input_track_id, output_track->GetId());
+			logtd("%s Updated output track. OutputTrack(%u)", _log_prefix.CStr(), input_track_id, output_track->GetId());
 
 			// Case of Passthrough
 			if (output_track->IsBypass() == true)
@@ -1116,74 +1372,83 @@ void TranscoderStream::UpdateOutputTrack(MediaFrame *buffer)
 	}
 }
 
+void TranscoderStream::ProcessPacket(const std::shared_ptr<MediaPacket> &packet)
+{
+	if (_input_stream->GetMsid() != packet->GetMsid() || packet == nullptr)
+	{
+		return;
+	}
+
+	BypassPacket(packet);
+
+	DecodePacket(packet);
+}
+
+void TranscoderStream::BypassPacket(const std::shared_ptr<MediaPacket> &packet)
+{
+	MediaTrackId input_track_id = packet->GetTrackId();
+
+	auto it = _link_input_to_outputs.find(input_track_id);
+	if (it == _link_input_to_outputs.end())
+	{
+		return;
+	}
+
+	auto input_track = _input_stream->GetTrack(input_track_id);
+	if (input_track == nullptr)
+	{
+		logte("%s Could not found input track. InputTrack(%d)", _log_prefix.CStr(), input_track_id);
+		return;
+	}
+
+	for (auto &[output_stream, output_track_id] : it->second)
+	{
+		auto output_track = output_stream->GetTrack(output_track_id);
+		if (output_track == nullptr)
+		{
+			logte("%s Could not found output track. OutputTrack(%d)", _log_prefix.CStr(), output_track_id);
+			continue;
+		}
+
+		// Clone the packet and send it to the output stream.
+		std::shared_ptr<MediaPacket> clone = nullptr;
+		
+		if (packet->GetBitstreamFormat() == cmn::BitstreamFormat::OVEN_EVENT)
+		{
+			auto event_packet = std::static_pointer_cast<MediaEvent>(packet);
+			clone = event_packet->Clone();
+		}
+		else 
+		{
+			clone = packet->ClonePacket();
+		}
+
+		double scale = input_track->GetTimeBase().GetExpr() / output_track->GetTimeBase().GetExpr();
+		clone->SetPts(static_cast<int64_t>((double)clone->GetPts() * scale));
+		clone->SetDts(static_cast<int64_t>((double)clone->GetDts() * scale));
+		clone->SetTrackId(output_track_id);
+
+		SendFrame(output_stream, std::move(clone));
+	}
+}
 
 void TranscoderStream::DecodePacket(const std::shared_ptr<MediaPacket> &packet)
 {
 	MediaTrackId input_track_id = packet->GetTrackId();
 
-	// 1. Packet to Output Stream (bypass)
-	auto output_streams = _link_input_to_outputs.find(input_track_id);
-	if (output_streams != _link_input_to_outputs.end())
-	{
-		auto &output_tracks = output_streams->second;
-
-		for (auto &[output_stream, output_track_id] : output_tracks)
-		{
-			auto input_track = _input_stream->GetTrack(input_track_id);
-			if (input_track == nullptr)
-			{
-				logte("%s Could not found input track. InputTrack(%d)", _log_prefix.CStr(), input_track_id);
-				continue;
-			}
-
-			auto output_track = output_stream->GetTrack(output_track_id);
-			if (output_track == nullptr)
-			{
-				logte("%s Could not found output track. OutputTrack(%d)", _log_prefix.CStr(), output_track_id);
-				continue;
-			}
-
-			double scale = input_track->GetTimeBase().GetExpr() / output_track->GetTimeBase().GetExpr();
-
-			// Clone the packet and send it to the output stream.
-			std::shared_ptr<MediaPacket> clone_packet = nullptr;
-			
-			if (packet->GetBitstreamFormat() == cmn::BitstreamFormat::OVEN_EVENT)
-			{
-				auto event_packet = std::static_pointer_cast<MediaEvent>(packet);
-				clone_packet = event_packet->Clone();
-			}
-			else 
-			{
-				clone_packet = packet->ClonePacket();
-			}
-			
-			clone_packet->SetTrackId(output_track_id);
-			clone_packet->SetPts((int64_t)((double)clone_packet->GetPts() * scale));
-			clone_packet->SetDts((int64_t)((double)clone_packet->GetDts() * scale));
-
-			SendFrame(output_stream, std::move(clone_packet));
-		}
-	}
-
-
-	// 2. Packet to Decoder (transcoding)
-	auto input_to_decoder_it = _link_input_to_decoder.find(input_track_id);
-	if (input_to_decoder_it == _link_input_to_decoder.end())
-	{
-		return;
-	}
-	auto decoder_id = input_to_decoder_it->second;
-
-	std::shared_lock<std::shared_mutex> lock(_decoder_map_mutex);
-
-	auto decoder_it = _decoders.find(decoder_id);
-	if (decoder_it == _decoders.end())
+	auto it = _link_input_to_decoder.find(input_track_id);
+	if (it == _link_input_to_decoder.end())
 	{
 		return;
 	}
 
-	auto decoder = decoder_it->second;
+	auto decoder_id = it->second;
+	auto decoder = GetDecoder(decoder_id);
+	if (decoder == nullptr)
+	{
+		logte("%s Could not found decoder. Decoder(%d)", _log_prefix.CStr(), decoder_id);
+		return;
+	}
 	decoder->SendBuffer(std::move(packet));
 }
 
@@ -1191,6 +1456,12 @@ void TranscoderStream::OnDecodedFrame(TranscodeResult result, MediaTrackId decod
 {
 	if (decoded_frame == nullptr)
 	{
+		return;
+	}
+
+	if(_is_updating == true)
+	{
+		logtd("%s Current state is updating format. suspend decoded frame. Decoder(%d)", _log_prefix.CStr(), decoder_id);
 		return;
 	}
 
@@ -1230,10 +1501,10 @@ void TranscoderStream::OnDecodedFrame(TranscodeResult result, MediaTrackId decod
 			last_frame->SetPts((int64_t)((double)decoded_frame->GetPts() * input_expr / filter_expr));
 
 			// Record the timestamp of the last decoded frame. managed by microseconds.
-			_last_decoded_frame_pts[decoder_id] = last_frame->GetPts() * filter_expr * 1000000;
+			_last_decoded_frame_pts[decoder_id] = last_frame->GetPts() * filter_expr * 1000000.0;
 
-			logtd("%s Create filler frame because there is no decoding frame. Type(%s), Decoder(%u), FillerFrames(%d)"
-				, _log_prefix.CStr(), cmn::GetMediaTypeString(input_track->GetMediaType()).CStr(), decoder_id, 1);
+			// logtd("%s Create filler frame because there is no decoding frame. Type(%s), Decoder(%u), FillerFrames(%d)"
+			// 	, _log_prefix.CStr(), cmn::GetMediaTypeString(input_track->GetMediaType()).CStr(), decoder_id, 1);
 
 			// Send Temporary Frame to Filter
 			SpreadToFilters(decoder_id, last_frame);
@@ -1245,80 +1516,95 @@ void TranscoderStream::OnDecodedFrame(TranscodeResult result, MediaTrackId decod
 		case TranscodeResult::FormatChanged: {
 
 			// Re-create filter and encoder using the format of decoded frame
-			ChangeOutputFormat(decoded_frame.get());
+			ChangeOutputFormat(decoded_frame);
 
  #if FILLER_ENABLED
 			///////////////////////////////////////////////////////////////////
 			// Generate a filler frame (Part 2). * Using latest decoded frame
 			///////////////////////////////////////////////////////////////////
-			// - It is mainly used in Persistent Stream.
+			// - It is mainly used in Schedule stream.
 			// - When the input stream is changed, an empty section occurs in sequential frames. There is a problem with the A/V sync in the player.
 			//   If there is a section where the frame is empty, may be out of sync in the player.
 			//   Therefore, the filler frame is inserted in the hole of the sequential frame.
-			auto it = _last_decoded_frame_pts.find(decoder_id);
-			if(it != _last_decoded_frame_pts.end())
+			auto input_track = GetInputTrack(decoder_id);
+			if (!input_track)
 			{
-				auto input_track = GetInputTrack(decoder_id);
-				if(!input_track)
+				logte("Could not found input track. Decoder(%d)", decoder_id);
+				return;
+			}
+
+			if (_last_decoded_frame_pts.find(decoder_id) != _last_decoded_frame_pts.end())
+			{
+				auto last_decoded_frame_time_us = _last_decoded_frame_pts[decoder_id];
+				auto last_decoded_frame_duration_us = _last_decoded_frame_duration[decoder_id];
+
+				// Decoded frame PTS to microseconds
+				int64_t curr_decoded_frame_time_us = (int64_t)((double)decoded_frame->GetPts() * input_track->GetTimeBase().GetExpr() * 1000000);
+
+				// Calculate the time difference between the last decoded frame and the current decoded frame.
+				int64_t hole_time_us = curr_decoded_frame_time_us - (last_decoded_frame_time_us + last_decoded_frame_duration_us);
+				int64_t hole_time_tb = (int64_t)(floor((double)hole_time_us / input_track->GetTimeBase().GetExpr() / 1000000));
+
+				int64_t duration_per_frame = 0;
+				switch (input_track->GetMediaType())
 				{
-					logte("Could not found input track. Decoder(%d)", decoder_id);
-					return;
+					case cmn::MediaType::Video:
+						duration_per_frame = input_track->GetTimeBase().GetTimescale() / input_track->GetFrameRate();
+						break;
+					case cmn::MediaType::Audio:
+						duration_per_frame = decoded_frame->GetNbSamples();
+						break;
+					default:
+						break;
 				}
 
-				int64_t frame_hole_time_us = (int64_t)((double)decoded_frame->GetPts() * input_track->GetTimeBase().GetExpr() * 1000000) - (int64_t)it->second;
-				if(frame_hole_time_us > 0)
+				// If the time difference is greater than 0, it means that there is a hole between with the last frame and the current frame.
+				if (hole_time_tb >= duration_per_frame)
 				{
-					int32_t number_of_filler_frames_needed = 0;
+					int64_t start_pts = decoded_frame->GetPts() - hole_time_tb;
+					int64_t end_pts = decoded_frame->GetPts();
+					int32_t needed_frames = hole_time_tb / duration_per_frame;
+					int64_t reamiain_pts = hole_time_tb - (needed_frames * duration_per_frame);
 
-					switch(input_track->GetMediaType())
+					logtd("%s Create filler frame because time diffrence from last frame. Type(%s), needed(%d), last_pts(%lld), curr_pts(%lld), hole_time(%lld), hole_time_tb(%lld), frame_duration(%lld), remain_pts(%lld), start_pts(%lld), end_pts(%lld)",
+						  _log_prefix.CStr(), cmn::GetMediaTypeString(input_track->GetMediaType()).CStr(), needed_frames, last_decoded_frame_time_us, curr_decoded_frame_time_us, hole_time_us, hole_time_tb, duration_per_frame, reamiain_pts, start_pts, end_pts);
+
+					for (int64_t filler_pts = start_pts; filler_pts < end_pts; filler_pts += duration_per_frame)
 					{
-						case cmn::MediaType::Video:
-							number_of_filler_frames_needed = (int32_t)(((double)frame_hole_time_us/1000000) / (1.0f / input_track->GetFrameRate()));
-							break;
-						case cmn::MediaType::Audio:
-							number_of_filler_frames_needed = (int32_t)(((double)frame_hole_time_us/1000000) / (input_track->GetTimeBase().GetExpr() * (double)decoded_frame->GetNbSamples()));
-							break;
-						default:
-							break;
-					}
-
-					if(number_of_filler_frames_needed > 0)					
-					{
-						logtd("%s Create filler frame because time diffrence from last frame. Type(%s), Decoder(%u), FillerFrames(%d)"
-							,_log_prefix.CStr(), cmn::GetMediaTypeString(input_track->GetMediaType()).CStr(), decoder_id, number_of_filler_frames_needed);
-
-						int64_t frame_hole_time_tb 	= (int64_t)((double)frame_hole_time_us / input_track->GetTimeBase().GetExpr() / 1000000);
-						int64_t frame_duration_avg 	= frame_hole_time_tb / number_of_filler_frames_needed;
-						int64_t start_pts 			= decoded_frame->GetPts() - frame_hole_time_tb + frame_duration_avg;
-						int64_t end_pts 			= decoded_frame->GetPts();
-
-						for (int64_t filler_pts = start_pts; filler_pts < end_pts; filler_pts += frame_duration_avg)
+						std::shared_ptr<MediaFrame> clone_frame = decoded_frame->CloneFrame(true);
+						if (!clone_frame)
 						{
-							auto clone_frame = decoded_frame->CloneFrame();
-							clone_frame->SetPts(filler_pts);
-
-							// Fill the silence in the audio frame.
-							if (input_track->GetMediaType() == cmn::MediaType::Audio)
-							{
-								clone_frame->FillZeroData();
-							}
-
-							SpreadToFilters(decoder_id, clone_frame);
+							continue;
 						}
+						clone_frame->SetPts(filler_pts);
+						clone_frame->SetDuration(duration_per_frame);
+
+						if (input_track->GetMediaType() == cmn::MediaType::Audio)
+						{
+							if (end_pts - filler_pts < duration_per_frame)
+							{
+								int32_t remain_samples = end_pts - filler_pts;
+								clone_frame->SetDuration(remain_samples);
+
+								// There is no problem making the Samples smaller since the cloned frame is larger than the remaining samples.
+								// To do this properly, It need to reallocate audio buffers of MediaFrame.
+								clone_frame->SetNbSamples(remain_samples);
+							}
+							clone_frame->FillZeroData();
+						}
+
+						SpreadToFilters(decoder_id, clone_frame);
+						// logtd("%s Create filler frame. Type(%s), %s", _log_prefix.CStr(), cmn::GetMediaTypeString(input_track->GetMediaType()).CStr(), clone_frame->GetInfoString().CStr());
 					}
 				}
-			} 
+			}
 #endif // End of Filler Frame Generation	
 
 			[[fallthrough]];
 		}
 		
 		case TranscodeResult::DataReady: {
-
-			auto input_track = GetInputTrack(decoder_id);
-
-			// Record the timestamp of the last decoded frame. managed by microseconds.
-			_last_decoded_frame_pts[decoder_id] = decoded_frame->GetPts() * input_track->GetTimeBase().GetExpr() * 1000000;
+			
 
 			// The last decoded frame is kept and used as a filling frame in the blank section.
 			SetLastDecodedFrame(decoder_id, decoded_frame);
@@ -1336,6 +1622,12 @@ void TranscoderStream::OnDecodedFrame(TranscodeResult result, MediaTrackId decod
 
 void TranscoderStream::SetLastDecodedFrame(MediaTrackId decoder_id, std::shared_ptr<MediaFrame> &decoded_frame)
 {
+	auto input_track = GetInputTrack(decoder_id);
+
+	auto scale_factor = input_track->GetTimeBase().GetExpr() * 1000000.0;
+	_last_decoded_frame_pts[decoder_id] = static_cast<int64_t>(decoded_frame->GetPts() * scale_factor);
+	_last_decoded_frame_duration[decoder_id] = static_cast<int64_t>(decoded_frame->GetDuration() * scale_factor);
+
 	_last_decoded_frames[decoder_id] = decoded_frame->CloneFrame();
 }
 
@@ -1365,29 +1657,23 @@ std::shared_ptr<MediaTrack> TranscoderStream::GetInputTrackOfFilter(MediaTrackId
 		return nullptr;
 	}
 
-	std::shared_lock<std::shared_mutex> lock(_filter_map_mutex);
-
-	auto it = _filters.find(filter_ids[0]);
-	if (it == _filters.end())
+	auto filter = GetFilter(filter_ids[0]);
+	if (filter == nullptr)
 	{
 		return nullptr;
 	}
-	auto filter = it->second;
-	
+
 	return filter->GetInputTrack();
 }
 
 TranscodeResult TranscoderStream::FilterFrame(MediaTrackId filter_id, std::shared_ptr<MediaFrame> decoded_frame)
 {
-	std::shared_lock<std::shared_mutex> lock(_filter_map_mutex);
-
-	auto filter_it = _filters.find(filter_id);
-	if (filter_it == _filters.end())
+	auto filter = GetFilter(filter_id);
+	if (filter == nullptr)
 	{
 		return TranscodeResult::NoData;
 	}
 
-	auto filter = filter_it->second.get();
 	if (filter->SendBuffer(std::move(decoded_frame)) == false)
 	{
 		return TranscodeResult::DataError;
@@ -1398,35 +1684,81 @@ TranscodeResult TranscoderStream::FilterFrame(MediaTrackId filter_id, std::share
 
 void TranscoderStream::OnFilteredFrame(MediaTrackId filter_id, std::shared_ptr<MediaFrame> filtered_frame)
 {
+	if(_is_updating == true)
+	{
+		logtd("%s Current state is updating format. suspend filted frame. Filter(%d)", _log_prefix.CStr(), filter_id);
+		return;
+	}
+
 	filtered_frame->SetTrackId(filter_id);
+
+	PreEncodeFilterFrame(std::move(filtered_frame));
+}
+
+TranscodeResult TranscoderStream::PreEncodeFilterFrame(std::shared_ptr<MediaFrame> frame)
+{
+	auto filter_id = frame->GetTrackId();
+
+	// Get Encoder ID form Filter ID
+	auto filter_to_encoder_it = _link_filter_to_encoder.find(filter_id);
+	if (filter_to_encoder_it == _link_filter_to_encoder.end())
+	{
+		return TranscodeResult::NoData;
+	}
+	auto encoder_id = filter_to_encoder_it->second;
+
+	// Get EncoderSet
+	auto encoder_set = GetEncoder(encoder_id);
+	if(encoder_set.has_value() == false)
+	{
+		return TranscodeResult::NoData;
+	}
+
+	// If the encoder has a pre-encode filter, it is passed to the filter.
+	auto encode_filter = encoder_set->first;
+	if (encode_filter != nullptr)
+	{
+		encode_filter->SendBuffer(std::move(frame));
+
+		return TranscodeResult::DataReady;
+	}
+
+	OnPreEncodeFilteredFrame(encoder_id, std::move(frame));
+	
+	return TranscodeResult::DataReady;
+}
+
+void TranscoderStream::OnPreEncodeFilteredFrame(MediaTrackId encoder_id, std::shared_ptr<MediaFrame> filtered_frame)
+{
+	if(_is_updating == true)
+	{
+		logtd("%s Current state is updating format. suspend filtered frame. Encoder(%d)", _log_prefix.CStr(), encoder_id);
+		return;
+	}
+
+	filtered_frame->SetTrackId(encoder_id);
 
 	EncodeFrame(std::move(filtered_frame));
 }
 
 TranscodeResult TranscoderStream::EncodeFrame(std::shared_ptr<const MediaFrame> frame)
 {
-	auto filter_id = frame->GetTrackId();
+	auto encoder_id = frame->GetTrackId();
 
-	// Get Encoder ID
-	auto filter_to_encoder_it = _link_filter_to_encoder.find(filter_id);
-	if(filter_to_encoder_it == _link_filter_to_encoder.end())
+	// Get Encoder
+	auto encoder_set = GetEncoder(encoder_id);
+	if (encoder_set.has_value() == false)
 	{
 		return TranscodeResult::NoData;
 	}
-	auto encoder_id = filter_to_encoder_it->second;
 
-	// Get Encoder 
-	std::shared_lock<std::shared_mutex> lock(_encoder_map_mutex);
-	
-	auto encoder_map_it = _encoders.find(encoder_id);
-	if (encoder_map_it == _encoders.end())
+	auto encoder = encoder_set->second;
+	if (encoder == nullptr)
 	{
 		return TranscodeResult::NoData;
 	}
-	auto encoder = encoder_map_it->second.get();
 
 	encoder->SendBuffer(std::move(frame));
-
 	return TranscodeResult::DataReady;
 }
 
@@ -1438,35 +1770,36 @@ void TranscoderStream::OnEncodedPacket(MediaTrackId encoder_id, std::shared_ptr<
 		return;
 	}
 
-	// Explore if output tracks exist to send encoded packets
-	auto encoder_to_outputs_it = _link_encoder_to_outputs.find(encoder_id);
-	if (encoder_to_outputs_it == _link_encoder_to_outputs.end())
+	auto it = _link_encoder_to_outputs.find(encoder_id);
+	if (it == _link_encoder_to_outputs.end())
 	{
 		return;
 	}
-	auto output_tracks = encoder_to_outputs_it->second;
+	auto output_tracks = it->second;
 
-	// If a track exists to output, copy the encoded packet and send it to that track.
+
+	// The encoded packet is used in multiple tracks. 
+	int32_t used_count = output_tracks.size();
 	for (auto &[output_stream, output_track_id] : output_tracks)
 	{
-		std::shared_ptr<MediaPacket> clone_packet = nullptr;
+		std::shared_ptr<MediaPacket> packet = nullptr;
 		
-		if (encoded_packet->GetBitstreamFormat() == cmn::BitstreamFormat::OVEN_EVENT)
+		// If the packet is used in multiple tracks, it is cloned. 
+		packet = (used_count == 1) ? encoded_packet : encoded_packet->ClonePacket();
+		if (packet == nullptr)
 		{
-			auto event_packet = std::static_pointer_cast<MediaEvent>(encoded_packet);
-			clone_packet = event_packet->Clone();
+			logte("%s Could not clone packet. Encoder(%d)", _log_prefix.CStr(), encoder_id);
+			continue;
 		}
-		else 
-		{
-			clone_packet = encoded_packet->ClonePacket();
-		}
-		clone_packet->SetTrackId(output_track_id);
+
+		packet->SetTrackId(output_track_id);
 
 		// Send the packet to MediaRouter
-		SendFrame(output_stream, std::move(clone_packet));
+		SendFrame(output_stream, std::move(packet));
+
+		used_count--;
 	}
 }
-
 
 void TranscoderStream::UpdateMsidOfOutputStreams(uint32_t msid)
 {
@@ -1483,10 +1816,12 @@ void TranscoderStream::SendFrame(std::shared_ptr<info::Stream> &stream, std::sha
 {
 	packet->SetMsid(stream->GetMsid());
 
+	// Send the packet to MediaRouter
 	bool ret = _parent->SendFrame(stream, std::move(packet));
 	if (ret == false)
 	{
-		logtw("%s Could not send frame to mediarouter. Stream(%s(%u)), OutputTrack(%u)", _log_prefix.CStr(), stream->GetName().CStr(), stream->GetId(), packet->GetTrackId());
+		logtw("%s Could not send frame to mediarouter. Stream(%s(%u)), OutputTrack(%u)",
+			  _log_prefix.CStr(), stream->GetName().CStr(), stream->GetId(), packet->GetTrackId());
 	}
 }
 
@@ -1525,7 +1860,8 @@ void TranscoderStream::NotifyCreateStreams()
 
 		if (_parent->CreateStream(output_stream) == false)
 		{
-			logtw("%s Could not create stream. [%s/%s(%u)]", _log_prefix.CStr(), _application_info.GetVHostAppName().CStr(), output_stream->GetName().CStr(), output_stream->GetId());
+			logtw("%s Could not create stream. [%s/%s(%u)]",
+				  _log_prefix.CStr(), _application_info.GetVHostAppName().CStr(), output_stream->GetName().CStr(), output_stream->GetId());
 		}
 	}
 }
@@ -1538,7 +1874,8 @@ void TranscoderStream::NotifyDeleteStreams()
 
 		if (_parent->DeleteStream(output_stream) == false)
 		{
-			logtw("%s Could not delete stream. %s/%s(%u)", _log_prefix.CStr(), _application_info.GetVHostAppName().CStr(), output_stream->GetName().CStr(), output_stream->GetId());
+			logtw("%s Could not delete stream. %s/%s(%u)",
+				  _log_prefix.CStr(), _application_info.GetVHostAppName().CStr(), output_stream->GetName().CStr(), output_stream->GetId());
 		}
 	}
 
@@ -1553,7 +1890,8 @@ void TranscoderStream::NotifyUpdateStreams()
 
 		if (_parent->UpdateStream(output_stream) == false)
 		{
-			logtw("%s Could not update stream. %s/%s(%u)", _log_prefix.CStr(), _application_info.GetVHostAppName().CStr(), output_stream->GetName().CStr(), output_stream->GetId());
+			logtw("%s Could not update stream. %s/%s(%u)",
+				  _log_prefix.CStr(), _application_info.GetVHostAppName().CStr(), output_stream->GetName().CStr(), output_stream->GetId());
 		}
 	}
 }

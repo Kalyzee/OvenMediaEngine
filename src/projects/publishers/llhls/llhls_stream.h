@@ -19,13 +19,10 @@
 #include "llhls_master_playlist.h"
 #include "llhls_chunklist.h"
 
-#define DEFAULT_PLAYLIST_NAME	"llhls.m3u8"
-
-
 // max initial media packet buffer size, for OOM protection
 #define MAX_INITIAL_MEDIA_PACKET_BUFFER_SIZE		10000
 
-class LLHlsStream : public pub::Stream, public bmff::FMp4StorageObserver
+class LLHlsStream final : public pub::Stream, public bmff::FMp4StorageObserver
 {
 public:
 	static std::shared_ptr<LLHlsStream> Create(const std::shared_ptr<pub::Application> application, 
@@ -34,6 +31,14 @@ public:
 
 	explicit LLHlsStream(const std::shared_ptr<pub::Application> application, const info::Stream &info, uint32_t worker_count);
 	~LLHlsStream() final;
+
+	ov::String GetStreamId() const;
+
+	//--------------------------------------------------------------------
+	// Implementation of info::Stream
+	//--------------------------------------------------------------------
+	std::shared_ptr<const DefaultPlaylistInfo> GetDefaultPlaylistInfo() const override;
+	//--------------------------------------------------------------------
 
 	void SendVideoFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 	void SendAudioFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
@@ -134,6 +139,8 @@ private:
 
 	int64_t GetMinimumLastSegmentNumber() const;
 	bool StopToSaveOldSegmentsInfo();
+
+	double ComputeOptimalPartDuration(const std::shared_ptr<const MediaTrack> &track) const;
 
 	//////////////////////////
 	// Events

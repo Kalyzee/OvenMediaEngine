@@ -139,8 +139,32 @@ namespace ov
 		int min_part = (gmtoff % 3600) / 60;
 		oss << sign << std::setfill('0') << std::setw(2) << hour_part << ":" << std::setfill('0') << std::setw(2) << min_part;
 
-		return oss.str().c_str();
+		ov::String time_string = oss.str().c_str();
+		return time_string;
 	}
+
+	// HTTP-date    = IMF-fixdate / obs-date
+	// An example of the preferred format is
+	// Sun, 06 Nov 1994 08:49:37 GMT    ; IMF-fixdate
+	// Examples of the two obsolete formats are
+	// Sunday, 06-Nov-94 08:49:37 GMT   ; obsolete RFC 850 format
+	// Sun Nov  6 08:49:37 1994         ; ANSI C's asctime() format
+	String Converter::ToRFC7231String(const std::chrono::system_clock::time_point &tp) 
+	{
+        // Convert time_point to time_t
+        auto time = std::chrono::system_clock::to_time_t(tp);
+
+        // Convert time_t to UTC (GMT) time
+        std::tm gmt_time{};
+        ::gmtime_r(&time, &gmt_time);
+
+        // Format the time in RFC 7231 format
+        std::ostringstream oss;
+        oss << std::put_time(&gmt_time, "%a, %d %b %Y %H:%M:%S GMT");
+
+		ov::String time_string = oss.str().c_str();
+        return time_string;
+    }
 
 	// From ISO8601 string to time_point
 	std::chrono::system_clock::time_point Converter::FromISO8601(const String &iso8601)

@@ -9,6 +9,7 @@ LOCAL_STATIC_LIBRARIES := \
 	file_publisher \
 	push_publisher \
 	thumbnail_publisher \
+	srt_publisher \
 	ovt_provider \
 	rtmp_provider \
 	srt_provider \
@@ -30,6 +31,8 @@ LOCAL_STATIC_LIBRARIES := \
 	rtp_rtcp \
 	sdp \
 	id3v2 \
+	cue_event \
+	amf_event \
 	segment_writer \
 	web_console \
 	mediarouter \
@@ -58,6 +61,7 @@ LOCAL_STATIC_LIBRARIES := \
 # rtsp_provider 
 
 LOCAL_PREBUILT_LIBRARIES := \
+	libspdlog.a \
 	libpugixml.a
 
 LOCAL_LDFLAGS := -lpthread -luuid
@@ -116,6 +120,10 @@ endif
 ifeq ($(MAKECMDGOALS),release)
 $(call add_pkg_config,jemalloc)
 endif
+
+# Setup flags for spdlog
+LOCAL_CFLAGS += -DSPDLOG_COMPILED_LIB -Iprojects/third_party/spdlog-1.15.1/include
+LOCAL_CXXFLAGS += -DSPDLOG_COMPILED_LIB -Iprojects/third_party/spdlog-1.15.1/include
 
 LOCAL_TARGET := OvenMediaEngine
 

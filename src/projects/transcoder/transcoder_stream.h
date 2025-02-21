@@ -23,10 +23,13 @@
 #include "transcoder_encoder.h"
 #include "transcoder_filter.h"
 #include "transcoder_stream_internal.h"
+#include "transcoder_events.h"
 
 class TranscodeApplication;
 
-class TranscoderStream : public ov::EnableSharedFromThis<TranscoderStream>, public TranscoderStreamInternal
+class TranscoderStream : public ov::EnableSharedFromThis<TranscoderStream>,
+						 public TranscoderStreamInternal,
+						 public TranscoderEvents
 {
 public:
 	class CompositeContext
@@ -122,12 +125,14 @@ private:
 
 private:
 	ov::String _log_prefix;
+	
+	TranscodeApplication *_parent;
+
 	std::shared_mutex _format_change_mutex;
 	std::shared_mutex _decoder_map_mutex;
 	std::shared_mutex _filter_map_mutex;
 	std::shared_mutex _encoder_map_mutex;
 
-	TranscodeApplication *_parent;
 
 	const info::Application _application_info;
 
@@ -147,7 +152,7 @@ private:
 	// [OUTPUT_STREAM_NAME, OUTPUT_stream]
 	std::map<ov::String, std::shared_ptr<info::Stream>> _output_streams;
 
-	// Map of CompositeContext
+	// Map of CompositeContext	
 	// Purpose of reusing the same encoding profile.
 	// 
 	// [
@@ -159,19 +164,19 @@ private:
 	std::atomic<MediaTrackId> _last_composite_id = 0;
 
 	// This map is used only when the Passthrough options is enabled.
-	// [INPUT_TRACK_ID,  OUTPUT_TRACK_IDS of OutputStream]
+	// [INPUT_TRACK_ID,  OUTPUT_TRACK_ID]
 	std::map<MediaTrackId, std::vector<std::pair<std::shared_ptr<info::Stream>, MediaTrackId>>> _link_input_to_outputs;
 
 	// [INPUT_TRACK_ID, DECODER_ID]
 	std::map<MediaTrackId, MediaTrackId> _link_input_to_decoder;
 
-	// [DECODER_ID, FILTER_IDS]
+	// [DECODER_ID, FILTER_ID]
 	std::map<MediaTrackId, std::vector<MediaTrackId>> _link_decoder_to_filters;
 
 	// [FILTER_ID, ENCODER_ID]
 	std::map<MediaTrackId, MediaTrackId> _link_filter_to_encoder;
 
-	// [ENCODER_ID, OUTPUT_TRACK_IDS Of OutputStream]
+	// [ENCODER_ID, OUTPUT_TRACK_ID]
 	std::map<MediaTrackId, std::vector<std::pair<std::shared_ptr<info::Stream>, MediaTrackId>>> _link_encoder_to_outputs;
 
 	// Decoder Component
@@ -183,14 +188,15 @@ private:
 	std::map<MediaTrackId, std::shared_ptr<MediaFrame>> _last_decoded_frames;
 	// [DECODER_ID, Timestamp(microseconds)]
 	std::map<MediaTrackId, int64_t> _last_decoded_frame_pts;
+	std::map<MediaTrackId, int64_t> _last_decoded_frame_duration;
 
-	// Filter Component
+	// Filters
 	// [FILTER_ID, FILTER]
 	std::map<MediaTrackId, std::shared_ptr<TranscodeFilter>> _filters;
 
 	// Encoder Component
-	// [ENCODER_ID, ENCODER]
-	std::map<MediaTrackId, std::shared_ptr<TranscodeEncoder>> _encoders;
+	// [ENCODER_ID, [FILTER, ENCODER]]
+	std::map<MediaTrackId, std::pair<std::shared_ptr<TranscodeFilter>, std::shared_ptr<TranscodeEncoder>>> _encoders;
 
 private:
 	std::shared_ptr<MediaTrack> GetInputTrack(MediaTrackId track_id);
@@ -215,31 +221,49 @@ private:
 
 	int32_t CreateDecoders();
 	bool CreateDecoder(MediaTrackId decoder_id, std::shared_ptr<info::Stream> input_stream, std::shared_ptr<MediaTrack> input_track);
+	std::shared_ptr<TranscodeDecoder> GetDecoder(MediaTrackId decoder_id);
+	void SetDecoder(MediaTrackId decoder_id, std::shared_ptr<TranscodeDecoder> decoder);
+	void RemoveDecoders();
 
-	int32_t CreateFilters(MediaFrame *buffer);
+
+	int32_t CreateFilters(std::shared_ptr<MediaFrame> buffer);
 	bool CreateFilter(MediaTrackId filter_id, std::shared_ptr<MediaTrack> input_track, std::shared_ptr<MediaTrack> output_track);
+	std::shared_ptr<TranscodeFilter> GetFilter(MediaTrackId filter_id);
+	void SetFilter(MediaTrackId filter_id, std::shared_ptr<TranscodeFilter> filter);
+	void RemoveFilters();
+
 	std::shared_ptr<MediaTrack> GetInputTrackOfFilter(MediaTrackId decoder_id);
 
-	int32_t CreateEncoders(MediaFrame *buffer);
+	int32_t CreateEncoders(std::shared_ptr<MediaFrame> buffer);
 	bool CreateEncoder(MediaTrackId encoder_id, std::shared_ptr<info::Stream> output_stream, std::shared_ptr<MediaTrack> output_track);
+	std::optional<std::pair<std::shared_ptr<TranscodeFilter>, std::shared_ptr<TranscodeEncoder>>> GetEncoder(MediaTrackId encoder_id);
+	void SetEncoder(MediaTrackId encoder_id, std::shared_ptr<TranscodeFilter> filter, std::shared_ptr<TranscodeEncoder> encoder);
+	void RemoveEncoders();
+
+	void ProcessPacket(const std::shared_ptr<MediaPacket> &packet);
 
 	// Step 1: Decode (Decode a frame from given packets)
+	void BypassPacket(const std::shared_ptr<MediaPacket> &packet);	
 	void DecodePacket(const std::shared_ptr<MediaPacket> &packet);
 	void OnDecodedFrame(TranscodeResult result, MediaTrackId decoder_id, std::shared_ptr<MediaFrame> decoded_frame);
 	void SetLastDecodedFrame(MediaTrackId decoder_id, std::shared_ptr<MediaFrame> &decoded_frame);
 	std::shared_ptr<MediaFrame> GetLastDecodedFrame(MediaTrackId decoder_id);
 
 	// Called when formatting of decoded frames is analyzed or changed.
-	void ChangeOutputFormat(MediaFrame *buffer);
-	void UpdateInputTrack(MediaFrame *buffer);
-	void UpdateOutputTrack(MediaFrame *buffer);
+	void ChangeOutputFormat(std::shared_ptr<MediaFrame> buffer);
+	void UpdateInputTrack(std::shared_ptr<MediaFrame> buffer);
+	void UpdateOutputTrack(std::shared_ptr<MediaFrame> buffer);
 	void UpdateMsidOfOutputStreams(uint32_t msid);
+	bool CanSeamlessTransition(const std::shared_ptr<info::Stream> &stream);
+	void FlushBuffers();
 
 	// Step 2: Filter (resample/rescale the decoded frame)
 	void SpreadToFilters(MediaTrackId decoder_id, std::shared_ptr<MediaFrame> frame);
 	TranscodeResult FilterFrame(MediaTrackId track_id, std::shared_ptr<MediaFrame> frame);
 	void OnFilteredFrame(MediaTrackId filter_id, std::shared_ptr<MediaFrame> decoded_frame);
-	bool IsAvailableSmoothTransition(const std::shared_ptr<info::Stream> &stream);
+
+	TranscodeResult PreEncodeFilterFrame(std::shared_ptr<MediaFrame> frame);
+	void OnPreEncodeFilteredFrame(MediaTrackId filter_id, std::shared_ptr<MediaFrame> decoded_frame);
 
 	// Step 3: Encode (Encode the filtered frame to packets)
 	TranscodeResult EncodeFrame(std::shared_ptr<const MediaFrame> frame);
@@ -248,15 +272,13 @@ private:
 	// Send encoded packet to mediarouter via transcoder application
 	void SendFrame(std::shared_ptr<info::Stream> &stream, std::shared_ptr<MediaPacket> packet);
 
-	// Remove all components
-	void RemoveAllComponents();
-	void RemoveDecoders();
-	void RemoveFilters();
-	void RemoveEncoders();
+	ov::String MakeRenditionName(const ov::String &name_template, const std::shared_ptr<info::Playlist> &playlist_info, const std::shared_ptr<MediaTrack> &video_track, const std::shared_ptr<MediaTrack> &audio_track);
 
 private:
 	// Initial buffer for ready to stream
 	void BufferMediaPacketUntilReadyToPlay(const std::shared_ptr<MediaPacket> &media_packet);
 	bool SendBufferedPackets();
 	ov::Queue<std::shared_ptr<MediaPacket>> _initial_media_packet_buffer;
+
+	std::atomic<bool> _is_updating = false;
 };

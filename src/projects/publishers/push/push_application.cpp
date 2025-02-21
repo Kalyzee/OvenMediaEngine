@@ -85,8 +85,7 @@ namespace pub
 			auto pushes = GetPushesByStreamMap(stream_map.GetPath(), info);
 			for(auto &push : pushes)
 			{
-				push->SetByConfig(true);
-				StartPush(push);
+				StartPush(push, true);
 			}
 		}
 
@@ -130,7 +129,7 @@ namespace pub
 		return it->second;
 	}
 
-	std::shared_ptr<ov::Error> PushApplication::StartPush(const std::shared_ptr<info::Push> &push)
+	std::shared_ptr<ov::Error> PushApplication::StartPush(const std::shared_ptr<info::Push> &push, bool is_config)
 	{
 		ov::String error_message;
 
@@ -146,9 +145,9 @@ namespace pub
 			return ov::Error::CreateError(PUSH_PUBLISHER_ERROR_DOMAIN, ErrorCode::FailureDuplicateKey, error_message);
 		}
 
-		// 녹화 활성화
 		push->SetEnable(true);
 		push->SetRemove(false);
+		push->SetByConfig(is_config);
 
 		std::unique_lock<std::shared_mutex> lock(_push_map_mutex);
 		_pushes[push->GetId()] = push;
@@ -257,7 +256,7 @@ namespace pub
 		{
 			case pub::Session::SessionState::Started:
 				session->Stop();
-				logti("Push ended. %s", push->GetInfoString().CStr());
+				logti("Push stopped. %s", push->GetInfoString().CStr());
 				break;
 			case pub::Session::SessionState::Ready:
 				[[fallthrough]];
@@ -320,7 +319,7 @@ namespace pub
 
 					// Find a session by session ID
 					auto session = stream->GetSession(push->GetSessionId());
-					if (session == nullptr)
+					if (session == nullptr || push->GetSessionId() == 0)
 					{
 						session = stream->CreatePushSession(push);
 						if (session == nullptr)
@@ -392,6 +391,7 @@ namespace pub
 				continue;
 			}
 
+			// Get configuration values
 			ov::String map_id = curr_node.child_value("Id");
 			ov::String target_stream_name = curr_node.child_value("StreamName");
 			ov::String variant_names = curr_node.child_value("VariantNames");
@@ -399,7 +399,20 @@ namespace pub
 			ov::String url = curr_node.child_value("Url");
 			ov::String stream_key = curr_node.child_value("StreamKey");
 
+			// Get the source stream name. If no linked input stream, use the current output stream name.
+			ov::String source_stream_name = stream_info->GetName();
+			if (stream_info->GetLinkedInputStream() != nullptr)
+			{
+				source_stream_name = stream_info->GetLinkedInputStream()->GetName();
+			}
+			else
+			{
+				source_stream_name = stream_info->GetName();
+			}
+
 			// stream_name can be regex
+			target_stream_name = target_stream_name.Replace("${SourceStream}", source_stream_name.CStr());
+
 			ov::Regex _target_stream_name_regex = ov::Regex::CompiledRegex(ov::Regex::WildCardRegex(target_stream_name));
 			auto match_result = _target_stream_name_regex.Matches(stream_info->GetName().CStr());
 
@@ -411,30 +424,15 @@ namespace pub
 			// Macro replacement for stream name
 			url = url.Replace("${Application}", stream_info->GetApplicationName());			
 			url = url.Replace("${Stream}", stream_info->GetName().CStr());
-			if (stream_info->GetLinkedInputStream() != nullptr)
-			{
-				url = url.Replace("${SourceStream}", stream_info->GetLinkedInputStream()->GetName().CStr());
-			}
-			else
-			{
-				url = url.Replace("${SourceStream}", stream_info->GetName().CStr());
-			}
+			url = url.Replace("${SourceStream}", source_stream_name.CStr());
 
 			// Macro replacement for stream key
 			if(stream_key.IsEmpty() == false)
 			{
 				stream_key = stream_key.Replace("${Application}", stream_info->GetApplicationName());			
 				stream_key = stream_key.Replace("${Stream}", stream_info->GetName().CStr());
-				if (stream_info->GetLinkedInputStream() != nullptr)
-				{
-					stream_key = stream_key.Replace("${SourceStream}", stream_info->GetLinkedInputStream()->GetName().CStr());
-				}
-				else
-				{
-					stream_key = stream_key.Replace("${SourceStream}", stream_info->GetName().CStr());
-				}
+				stream_key = stream_key.Replace("${SourceStream}", source_stream_name.CStr());
 			}
-
 
 			auto push = std::make_shared<info::Push>();
 			if(push == nullptr)
@@ -451,6 +449,7 @@ namespace pub
 
 			push->SetId(id);
 			push->SetEnable(enable);
+			push->SetByConfig(true);
 			push->SetVhost(GetVHostAppName().GetVHostName());
 			push->SetApplication(GetVHostAppName().GetAppName());
 			push->SetStreamName(stream_info->GetName().CStr());

@@ -14,15 +14,15 @@
 #include <modules/containers/mpegts/mpegts_packager.h>
 #include <monitoring/monitoring.h>
 
+#include <modules/data_format/cue_event/cue_event.h>
+
 #include "hls_master_playlist.h"
 #include "hls_media_playlist.h"
-
-#define TS_HLS_DEFAULT_PLAYLIST_NAME	"playlist.m3u8"
 
 // max initial media packet buffer size, for OOM protection
 #define MAX_INITIAL_MEDIA_PACKET_BUFFER_SIZE 10000
 
-class HlsStream : public pub::Stream, public mpegts::PackagerSink
+class HlsStream final : public pub::Stream, public mpegts::PackagerSink
 {
 public:
 	static std::shared_ptr<HlsStream> Create(const std::shared_ptr<pub::Application> application, 
@@ -31,6 +31,12 @@ public:
 
 	explicit HlsStream(const std::shared_ptr<pub::Application> application, const info::Stream &info, uint32_t worker_count);
 	~HlsStream() final;
+
+	//--------------------------------------------------------------------
+	// Implementation of info::Stream
+	//--------------------------------------------------------------------
+	std::shared_ptr<const pub::Stream::DefaultPlaylistInfo> GetDefaultPlaylistInfo() const override;
+	//--------------------------------------------------------------------
 
 	void SendVideoFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 	void SendAudioFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
@@ -53,6 +59,8 @@ public:
 	std::tuple<RequestResult, std::shared_ptr<const ov::Data>> GetMediaPlaylistData(const ov::String &variant_name, bool rewind);
 	std::tuple<RequestResult, std::shared_ptr<const ov::Data>> GetSegmentData(const ov::String &variant_name, uint32_t number);
 
+	ov::String GetStreamId() const;
+
 private:
 	bool Start() override;
 	bool Stop() override;
@@ -61,7 +69,7 @@ private:
 	bool CreateDefaultPlaylist();
 	bool CreatePackagers();
 
-	ov::String GetVariantName(const ov::String &video_variant_name, const ov::String &audio_variant_name) const;
+	ov::String GetVariantName(const ov::String &video_variant_name, int video_index, const ov::String &audio_variant_name, int audio_index) const;
 	ov::String GetMediaPlaylistName(const ov::String &variant_name) const;
 	ov::String GetSegmentName(const ov::String &variant_name, uint32_t number) const;
 

@@ -31,6 +31,7 @@ extern "C"
 
 #include <base/common_types.h>
 #include <base/info/media_track.h>
+#include <base/info/push.h>
 #include <base/mediarouter/media_type.h>
 #include <base/ovlibrary/ovlibrary.h>
 #include <transcoder/transcoder_context.h>
@@ -514,29 +515,30 @@ namespace ffmpeg
 			return nullptr;
 		}
 
-		static inline int64_t GetDurationPerFrame(cmn::MediaType media_type, std::shared_ptr<MediaTrack>& context, AVFrame* frame = nullptr)
+		static inline int64_t GetDurationPerFrame(cmn::MediaType media_type, std::shared_ptr<MediaTrack>& track, AVFrame* frame = nullptr)
 		{
-			switch (media_type)
+			if(frame == nullptr || track->GetTimeBase().GetDen() == 0)
+			{
+				return 0LL;
+			}
+
+			switch (track->GetMediaType())
 			{
 				case cmn::MediaType::Video: {
-					// Calculate duration using framerate in timebase
-					int den = context->GetTimeBase().GetDen();
-
-					// TODO(Keukhan) : If there is no framerate value, the frame rate value cannot be calculated normally.
-					int64_t duration = (den == 0) ? 0LL : (float)den / context->GetFrameRate();
-					return duration;
+					// The video frame rate changes, so this code finds the average duration. It does not show the exact frame rate.
+					double frame_duration_per_timebase = (double)(track->GetTimeBase().GetDen()) / track->GetFrameRate();
+					return static_cast<int64_t>(frame_duration_per_timebase);
 				}
 				break;
 				case cmn::MediaType::Audio:
 				default: {
-					float frame_duration_in_second = frame->nb_samples * (1.0f / frame->sample_rate);
-					int frame_duration_in_timebase = static_cast<int>(frame_duration_in_second * context->GetTimeBase().GetDen());
-					return frame_duration_in_timebase;
+					double frame_duration_per_timebase = ((double)frame->nb_samples * (double)(track->GetTimeBase().GetDen())) / (double)frame->sample_rate;
+					return static_cast<int64_t>(frame_duration_per_timebase);
 				}
 				break;
 			}
 
-			return -1;
+			return 0LL;
 		}
 
 		static bool IsPlanar(AVSampleFormat format)
@@ -709,14 +711,9 @@ namespace ffmpeg
 					}
 
 					message.AppendFormat("%d kbps, ", (parameters->bit_rate / 1024));
+					
 					// timebase: 1/48000
-					message.AppendFormat("timebase: %d/%d, ", context->time_base.num, context->time_base.den);
-
-					if (parameters->block_align != 0)
-					{
-						// align: 32
-						message.AppendFormat(", align: %d", parameters->block_align);
-					}
+					message.AppendFormat("timebase: %d/%d", context->time_base.num, context->time_base.den);
 
 					break;
 
@@ -796,6 +793,11 @@ namespace ffmpeg
 				}
 				break;
 
+				case cmn::MediaType::Data:
+				{
+					codecpar->codec_id = AV_CODEC_ID_NONE;
+				}
+				break;
 				default:
 					return false;
 			}
@@ -808,7 +810,7 @@ namespace ffmpeg
 			return ov::String::FormatString("%s", ::avcodec_get_name(codec_id));
 		}
 
-		static ov::String GetFormatByExtension(ov::String extension, ov::String default_format)
+		static ov::String GetFormatByExtension(ov::String extension, ov::String default_format = "mpegts")
 		{
 			if (extension == "mp4")
 			{
@@ -821,6 +823,23 @@ namespace ffmpeg
 			else if (extension == "webm")
 			{
 				return "webm";
+			}
+
+			return default_format;
+		}
+
+		static ov::String GetFormatByProtocolType(const info::Push::ProtocolType protocol_type, ov::String default_format = "flv")
+		{
+			switch (protocol_type)
+			{
+				case info::Push::ProtocolType::RTMP:
+					return "flv";
+				case info::Push::ProtocolType::MPEGTS:
+					return "mpegts";
+				case info::Push::ProtocolType::SRT:
+					return "mpegts";
+				default:
+					break;
 			}
 
 			return default_format;
@@ -897,7 +916,7 @@ namespace ffmpeg
 			frames_ctx->sw_format = *(constraints->valid_sw_formats);;
 			frames_ctx->width = context->width;
 			frames_ctx->height = context->height;
-			frames_ctx->initial_pool_size = 10;
+			frames_ctx->initial_pool_size = 2;
 			
 			if ((err = ::av_hwframe_ctx_init(hw_frames_ref)) < 0)
 			{
@@ -942,7 +961,7 @@ namespace ffmpeg
 			frames_ctx->sw_format = *(constraints->valid_sw_formats);
 			frames_ctx->width = width;
 			frames_ctx->height = height;
-			frames_ctx->initial_pool_size = 10;
+			frames_ctx->initial_pool_size = 2;
 
 			if (av_hwframe_ctx_init(hw_frames_ref) < 0)
 			{
@@ -954,7 +973,16 @@ namespace ffmpeg
 
 			av_buffer_unref(&hw_frames_ref);
 
-			return true;
+			return true; 
+		}
+
+		static ov::String ErrorToString(int av_errno)
+		{
+			char errbuf[1024];
+			::av_make_error_string(errbuf, sizeof(errbuf), av_errno);
+
+			ov::String error_message = errbuf;
+			return error_message;
 		}
 	};
 

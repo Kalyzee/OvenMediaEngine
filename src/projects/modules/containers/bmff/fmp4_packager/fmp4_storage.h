@@ -9,6 +9,7 @@
 #pragma once
 
 #include "fmp4_structure.h"
+#include <modules/marker/marker_box.h>
 
 namespace bmff
 {
@@ -43,16 +44,18 @@ namespace bmff
 		std::shared_ptr<FMP4Segment> GetLastSegment() const;
 		std::shared_ptr<FMP4Chunk> GetMediaChunk(uint32_t segment_number, uint32_t chunk_number) const;
 
+		uint64_t GetSegmentCount() const;
+
 		std::tuple<int64_t, int64_t> GetLastChunkNumber() const;
 		int64_t GetLastSegmentNumber() const;
 
 		bool StoreInitializationSection(const std::shared_ptr<ov::Data> &section);
-		bool AppendMediaChunk(const std::shared_ptr<ov::Data> &chunk, int64_t start_timestamp, double duration_ms, bool independent, bool last_chunk);
+		bool AppendMediaChunk(const std::shared_ptr<ov::Data> &chunk, int64_t start_timestamp, double duration_ms, bool independent, bool last_chunk, const std::vector<Marker> &markers = {});
 
 		uint64_t GetMaxChunkDurationMs() const;
 		uint64_t GetMinChunkDurationMs() const;
 
-		int64_t GetTargetSegmentDuration() const;
+		double GetTargetSegmentDuration() const;
 
 	private:
 
@@ -177,9 +180,9 @@ namespace bmff
 		int64_t _start_timestamp_delta = -1;
 
 		double _max_chunk_duration_ms = 0;
-		double _min_chunk_duration_ms = std::numeric_limits<uint64_t>::max();
+		double _min_chunk_duration_ms = static_cast<double>(std::numeric_limits<uint64_t>::max());
 
-		int64_t _target_segment_duration_ms = 0;
+		double _target_segment_duration_ms = 0;
 
 		std::shared_ptr<FMp4StorageObserver> _observer;
 

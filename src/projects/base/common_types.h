@@ -99,6 +99,9 @@ enum class PublisherType : int8_t
 	File,
 	Thumbnail,
 	Hls, // HLSv3
+	Srt,
+
+	// End Marker
 	NumberOfPublishers,
 };
 
@@ -155,6 +158,16 @@ public:
 	{
 		fragmentation_offset.push_back(offset);
 		fragmentation_length.push_back(length);
+	}
+
+	std::optional<std::tuple<size_t, size_t>> GetFragment(size_t index) const
+	{
+		if (index < fragmentation_offset.size())
+		{
+			return std::make_tuple(fragmentation_offset[index], fragmentation_length[index]);
+		}
+
+		return std::nullopt;
 	}
 
 	size_t GetCount() const
@@ -286,7 +299,7 @@ struct CodecSpecificInfo
 {
 	cmn::MediaCodecId codec_type = cmn::MediaCodecId::None;
 	const char *codec_name = nullptr;
-	CodecSpecificInfoUnion codec_specific = {0};
+	CodecSpecificInfoUnion codec_specific = {};
 };
 
 static ov::String StringFromStreamSourceType(const StreamSourceType &type)
@@ -392,7 +405,9 @@ static ov::String StringFromPublisherType(const PublisherType &type)
 		case PublisherType::Thumbnail:
 			return "Thumbnail";
 		case PublisherType::Hls:
-			return "TS";
+			return "HLSv3";
+		case PublisherType::Srt:
+			return "SRT";
 	}
 
 	return "Unknown";
@@ -422,6 +437,8 @@ static ov::String StringFromMediaCodecId(const cmn::MediaCodecId &type)
 			return "JPEG";
 		case cmn::MediaCodecId::Png:
 			return "PNG";
+		case cmn::MediaCodecId::Webp:
+			return "WEBP";			
 		case cmn::MediaCodecId::None:
 		default:
 			return "Unknown";
@@ -446,4 +463,48 @@ static ov::String StringFromMediaType(const cmn::MediaType &type)
 		default:
 			return "Unknown";
 	}
+}
+
+static ProviderType ProviderTypeFromSourceType(const StreamSourceType &type)
+{
+	ProviderType provider_type = ProviderType::Unknown;
+	switch (type)
+	{
+		case StreamSourceType::WebRTC:
+			provider_type = ProviderType::WebRTC;
+			break;
+		case StreamSourceType::Ovt:
+			provider_type = ProviderType::Ovt;
+			break;
+		case StreamSourceType::Rtmp:
+			provider_type = ProviderType::Rtmp;
+			break;
+		case StreamSourceType::Rtsp:
+			provider_type = ProviderType::Rtsp;
+			break;
+		case StreamSourceType::RtspPull:
+			provider_type = ProviderType::RtspPull;
+			break;
+		case StreamSourceType::Mpegts:
+			provider_type = ProviderType::Mpegts;
+			break;
+		case StreamSourceType::Srt:
+			provider_type = ProviderType::Srt;
+			break;
+		case StreamSourceType::Scheduled:
+			provider_type = ProviderType::Scheduled;
+			break;
+		case StreamSourceType::Multiplex:
+			provider_type = ProviderType::Multiplex;
+			break;
+		case StreamSourceType::File:
+			provider_type = ProviderType::File;
+			break;
+		case StreamSourceType::RtmpPull:
+		case StreamSourceType::Transcoder:
+		default:
+			break;
+	}
+
+	return provider_type;
 }

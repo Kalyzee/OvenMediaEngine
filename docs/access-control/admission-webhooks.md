@@ -20,7 +20,7 @@ AdmissionWebhooks can be set up on VirtualHost, as shown below.
 		<Timeout>3000</Timeout>
 		<Enables>
 			<Providers>rtmp,webrtc,srt</Providers>
-			<Publishers>webrtc,llhls,thumbnail</Publishers>
+			<Publishers>webrtc,llhls,thumbnail,srt</Publishers>
 		</Enables>
 	</AdmissionWebhooks>
 </VirtualHost>
@@ -60,7 +60,7 @@ X-OME-Signature: f871jd991jj1929jsjd91pqa0amm1
     "status": "opening | closing",
     "url": "scheme://host[:port]/app/stream/file?query=value&query2=value2",
     "new_url": "scheme://host[:port]/app/new_stream/file?query=value&query2=value2",
-    "time": ""2021-05-12T13:45:00.000Z"
+    "time": "2021-05-12T13:45:00.000Z"
   }
 }
 ```

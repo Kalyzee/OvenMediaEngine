@@ -240,7 +240,7 @@ std::shared_ptr<TsHttpInterceptor> HlsPublisher::CreateInterceptor()
 		auto application = std::static_pointer_cast<HlsApplication>(GetApplicationByName(vhost_app_name));
 		if (application != nullptr)
 		{
-			application->GetCorsManager().SetupHttpCorsHeader(vhost_app_name, request, response, {http::Method::Options, http::Method::Get});
+			application->GetCorsManager().SetupHttpCorsHeader(vhost_app_name, request, response, {http::Method::Options, http::Method::Get, http::Method::Head});
 		}
 		else
 		{
@@ -423,7 +423,7 @@ std::shared_ptr<TsHttpInterceptor> HlsPublisher::CreateInterceptor()
 			try
 			{
 				// If this connection has been used by another session in the past, it is reused.
-				session = std::any_cast<std::shared_ptr<HlsSession>>(connection->GetUserData(stream->GetUri()));
+				session = std::any_cast<std::shared_ptr<HlsSession>>(connection->GetUserData(stream->GetStreamId()));
 			}
 			catch (const std::bad_any_cast &e)
 			{
@@ -506,11 +506,11 @@ std::shared_ptr<TsHttpInterceptor> HlsPublisher::CreateInterceptor()
 		}
 
 		// It will be used in CloseHandler
-		connection->AddUserData(stream->GetUri(), session);
+		connection->AddUserData(stream->GetStreamId(), session);
 		session->UpdateLastRequest(connection->GetId());
 
 		// Cors Setting
-		application->GetCorsManager().SetupHttpCorsHeader(vhost_app_name, request, response);
+		application->GetCorsManager().SetupHttpCorsHeader(vhost_app_name, request, response, {http::Method::Options, http::Method::Get, http::Method::Head});
 		stream->SendMessage(session, std::make_any<std::shared_ptr<http::svr::HttpExchange>>(exchange));
 
 		return http::svr::NextHandler::DoNotCallAndDoNotResponse;
@@ -555,8 +555,6 @@ std::shared_ptr<TsHttpInterceptor> HlsPublisher::CreateInterceptor()
 						stream->RemoveSession(session->GetId());
 					}
 				}
-
-				session->Stop();
 			}
 		}
 	});

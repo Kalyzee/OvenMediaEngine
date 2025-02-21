@@ -9,6 +9,8 @@
 #include "mpegts_packager.h"
 #include "mpegts_private.h"
 
+#include <modules/data_format/cue_event/cue_event.h>
+
 namespace mpegts
 {
     Packager::Packager(const ov::String &packager_id, const Config &config)
@@ -92,9 +94,9 @@ namespace mpegts
 
         for (const auto &track : tracks)
         {   
-            if (track->GetMediaType() != cmn::MediaType::Video && track->GetMediaType() != cmn::MediaType::Audio)
+            if (track->GetMediaType() != cmn::MediaType::Video && track->GetMediaType() != cmn::MediaType::Audio && track->GetMediaType() != cmn::MediaType::Data)
             {
-                logte("Unsupported media type %s in Mpeg-2 TS Packager", StringFromMediaType(track->GetMediaType()).CStr());
+                logte("Unsupported media type (%s) in Mpeg-2 TS Packager", StringFromMediaType(track->GetMediaType()).CStr());
                 continue;
             }
 
@@ -116,38 +118,6 @@ namespace mpegts
 
         _psi_packets = psi_packets;
         _psi_packet_data = MergeTsPacketData(psi_packets);
-    }
-
-    void Packager::OnFrame(const std::shared_ptr<const MediaPacket> &media_packet, const std::vector<std::shared_ptr<mpegts::Packet>> &pes_packets)
-    {
-       //logtd("OnFrame track_id %u", media_packet->GetTrackId());
-
-        auto track_id = media_packet->GetTrackId();
-        auto track = GetMediaTrack(track_id);
-
-        auto sample_buffer = GetSampleBuffer(track_id);
-        if (track == nullptr || sample_buffer == nullptr)
-        {
-            logte("SampleBuffer is not found for track_id %u", track_id);
-            return;
-        }
-
-        if (track_id == _main_track_id && 
-            sample_buffer->GetCurrentDurationUs() >= _config.target_duration_ms * 1000)
-        {
-            if (media_packet->GetMediaType() == cmn::MediaType::Video && media_packet->IsKeyFrame())
-            {
-                sample_buffer->MarkSegmentBoundary();
-            }
-            else if (media_packet->GetMediaType() == cmn::MediaType::Audio)
-            {
-                sample_buffer->MarkSegmentBoundary();
-            }
-        }
-
-        sample_buffer->AddSample(mpegts::Sample(media_packet, MergeTsPacketData(pes_packets)));
-
-        CreateSegmentIfReady();
     }
 
 	void Packager::Flush()
@@ -206,6 +176,52 @@ namespace mpegts
 		return segment->GetData();
 	}
 
+    void Packager::OnFrame(const std::shared_ptr<const MediaPacket> &media_packet, const std::vector<std::shared_ptr<mpegts::Packet>> &pes_packets)
+    {
+       //logtd("OnFrame track_id %u", media_packet->GetTrackId());
+
+        auto track_id = media_packet->GetTrackId();
+        auto track = GetMediaTrack(track_id);
+
+        auto sample_buffer = GetSampleBuffer(track_id);
+        if (track == nullptr || sample_buffer == nullptr)
+        {
+            logte("SampleBuffer is not found for track_id %u", track_id);
+            return;
+        }
+
+		auto sample = mpegts::Sample(media_packet, MergeTsPacketData(pes_packets), track->GetTimeBase().GetTimescale());
+
+		if (track_id == _main_track_id)
+		{
+			// sample._dts is "the last dts + sample duration" of the sample_buffer
+			if (_force_make_boundary == false && HasMarker(sample._dts) == true)
+			{
+				logti("Stream(%s) Track(%u) has a marker at %lld, force to create a new boundary", _config.stream_id_meta.CStr(), track_id, sample._dts);
+
+				_force_make_boundary = true;
+			}
+
+			if ((sample_buffer->GetCurrentDurationMs() >= _config.target_duration_ms) || _force_make_boundary == true)
+			{
+				if (media_packet->GetMediaType() == cmn::MediaType::Video && media_packet->IsKeyFrame())
+				{
+					sample_buffer->MarkSegmentBoundary();
+					_force_make_boundary = false;
+				}
+				else if (media_packet->GetMediaType() == cmn::MediaType::Audio)
+				{
+					sample_buffer->MarkSegmentBoundary();
+					_force_make_boundary = false;
+				}
+			}
+		}
+
+        sample_buffer->AddSample(sample);
+
+		CreateSegmentIfReady();
+    }
+
     void Packager::CreateSegmentIfReady(bool force_create)
     {
         // Check if the main track has a segment boundary
@@ -217,9 +233,9 @@ namespace mpegts
         }
 
 		// If the segment duration is too long (twice the target duration), a new segment is forcibly created.
-		if (force_create == false && main_sample_buffer->GetTotalAvailableDurationUs() >= _config.target_duration_ms * 2000)
+		if (force_create == false && main_sample_buffer->GetTotalAvailableDurationMs() >= _config.target_duration_ms * 2)
 		{
-			logtw("Stream(%s) Main Track(%u) has too long duration (%llu us, twice the target duration %u us), force to create a new segment", _config.stream_id_meta.CStr(), _main_track_id, main_sample_buffer->GetTotalAvailableDurationUs(), _config.target_duration_ms * 1000);
+			logtw("Stream(%s) Main Track(%u) has too long duration (%.3f ms, twice the target duration %u ms), force to create a new segment", _config.stream_id_meta.CStr(), _main_track_id, main_sample_buffer->GetTotalAvailableDurationMs(), _config.target_duration_ms);
 			
 			if (main_sample_buffer->HasSegmentBoundary() == false)
 			{
@@ -236,8 +252,42 @@ namespace mpegts
 			return;
         }
 
-        auto main_segment_duration_us = main_sample_buffer->GetDurationUntilSegmentBoundaryUs();
-        uint64_t total_main_segment_duration_us = main_sample_buffer->GetTotalConsumedDurationUs() + main_segment_duration_us;
+		auto main_segment_duration = main_sample_buffer->GetDurationUntilSegmentBoundary();
+		auto total_main_segment_duration = main_sample_buffer->GetTotalConsumedDuration() + main_segment_duration;
+        auto main_segment_duration_ms = main_sample_buffer->GetDurationUntilSegmentBoundaryMs();
+
+		int64_t main_segment_base_timestamp = main_sample_buffer->GetSample()._dts;
+		int64_t main_segment_end_timestamp = main_segment_base_timestamp + main_segment_duration;
+
+		std::vector<Marker> markers;
+		if (HasMarker(main_segment_end_timestamp) == true)
+		{
+			logtd("Stream(%s) Main Track(%u) main_segment_base_timestamp(%lld) main_segment_duration(%lld) main_segment_duration_ms(%f) main_segment_end_timestamp(%lld)", _config.stream_id_meta.CStr(), _main_track_id, main_segment_base_timestamp, main_segment_duration, main_segment_duration_ms, main_segment_end_timestamp);
+
+			markers = PopMarkers(main_segment_end_timestamp);
+			force_create = true;
+
+			// If the last marker is a cue-out marker, insert a cue-in marker automatically after duration of cue-out marker
+			auto last_marker = markers.back();
+			auto next_marker = GetFirstMarker();
+			if (last_marker.tag.UpperCaseString() == "CUEEVENT-OUT" && next_marker.tag.UpperCaseString() != "CUEEVENT-IN")
+			{
+				auto cue_out_event = CueEvent::Parse(last_marker.data);
+				if (cue_out_event != nullptr)
+				{
+					auto duration_msec = cue_out_event->GetDurationMsec();
+					auto main_track = GetMediaTrack(_main_track_id);
+					int64_t cue_in_timestamp = (main_segment_end_timestamp - 1) + (static_cast<double>(duration_msec) / 1000.0 * main_track->GetTimeBase().GetTimescale());
+
+					Marker cue_in_marker;
+					cue_in_marker.timestamp = cue_in_timestamp;
+					cue_in_marker.tag = "CueEvent-IN";
+					cue_in_marker.data = CueEvent::Create(CueEvent::CueType::IN, 0)->Serialize();
+
+					InsertMarker(cue_in_marker);
+				}
+			}
+		}
 
 		if (force_create == false)
 		{
@@ -248,35 +298,22 @@ namespace mpegts
 				{
 					continue;
 				}
-				
-				auto total_sample_segment_duration_us = sample_buffer->GetTotalConsumedDurationUs() + sample_buffer->GetCurrentDurationUs();
 
-				logtd("Stream(%s) Track(%u) \n\
-						total_sample_segment_duration_us(%llu)\n\
-							\tsample_buffer->GetTotalConsumedDurationUs()%llu\n\
-							\tsample_buffer->GetCurrentDurationUs()%llu\n\
-						total_main_segment_duration_us(%llu)\n\
-							\tmain_sample_buffer->GetDurationUntilSegmentBoundaryUs()(%llu)\n\
-							\tsample_buffer->GetCurrentDurationUs()(%llu)\n\
-						main_sample_buffer->GetTotalAvailableDurationUs()(%llu)", 
-									_config.stream_id_meta.CStr(), 
-									track_id, 
-									total_sample_segment_duration_us,
-									sample_buffer->GetTotalConsumedDurationUs(),
-									sample_buffer->GetCurrentDurationUs(),
-									total_main_segment_duration_us, 
-									main_sample_buffer->GetDurationUntilSegmentBoundaryUs(), 
-									sample_buffer->GetCurrentDurationUs(), 
-									main_sample_buffer->GetTotalAvailableDurationUs());
+				if (GetMediaTrack(track_id)->GetMediaType() == cmn::MediaType::Data)
+				{
+					continue;
+				}
+				
+				auto total_sample_segment_duration = sample_buffer->GetTotalConsumedDuration() + sample_buffer->GetCurrentDuration();
 
 				// if video segment is 6000, audio segment is at least 6000*0.97(=5820), it is normal case, wait for more samples
-				if (static_cast<double>(total_sample_segment_duration_us) < static_cast<double>(total_main_segment_duration_us) * 0.97)
+				if (static_cast<double>(total_sample_segment_duration) < static_cast<double>(total_main_segment_duration) * 0.97)
 				{
 					// Too much difference between the main track and the track, it means that the track may have a problem.
 					// For example, there may be cases where audio stops coming in at all at some point.
-					if (static_cast<double>(total_sample_segment_duration_us) * 2.0 < static_cast<double>(total_main_segment_duration_us))
+					if (total_sample_segment_duration * 2.0 < total_main_segment_duration)
 					{
-						logtw("Stream(%s) Track(%u) sample duration (%llu us) is less than half of the main (%llu us), forcing segment generation.", _config.stream_id_meta.CStr(), track_id, total_sample_segment_duration_us, total_main_segment_duration_us);
+						logtw("Stream(%s) Track(%u) sample duration (%lld) is less than half of the main (%lld), forcing segment generation.", _config.stream_id_meta.CStr(), track_id, total_sample_segment_duration, total_main_segment_duration);
 					}
 					else
 					{
@@ -294,7 +331,11 @@ namespace mpegts
             return;
         }
 
-        auto segment = std::make_shared<Segment>(GetNextSegmentId(), first_sample.media_packet->GetDts(), main_segment_duration_us);
+        auto segment = std::make_shared<Segment>(GetNextSegmentId(), first_sample._dts, main_segment_duration_ms);
+		if (markers.empty() == false)
+		{
+			segment->SetMarkers(markers);
+		}
 
         // Add PSI packets
         segment->AddPacketData(_psi_packet_data);
@@ -306,7 +347,7 @@ namespace mpegts
         for (const auto &main_sample : main_samples)
         {
             segment->AddPacketData(main_sample.ts_packet_data);
-            auto main_timestamp = main_sample.media_packet->GetDts();
+            auto main_timestamp = main_sample._dts;
 
             for (const auto &[track_id, sample_buffer] : _sample_buffers)
             {
@@ -330,7 +371,7 @@ namespace mpegts
                         break;
                     }
 
-                    if (sample.media_packet->GetDts() <= main_timestamp)
+                    if (sample._dts <= main_timestamp)
                     {
                         segment->AddPacketData(sample.ts_packet_data);
                         sample_buffer->PopSample();
@@ -355,6 +396,12 @@ namespace mpegts
                 {
                     continue;
                 }
+
+				if (GetMediaTrack(track_id)->GetMediaType() == cmn::MediaType::Data)
+				{
+					completed_tracks[track_id] = true;
+					continue;
+				}
                 
                 if (sample_buffer->IsEmpty())
                 {
@@ -362,10 +409,10 @@ namespace mpegts
                     continue;
                 }
 
-                if (sample_buffer->GetTotalConsumedDurationUs() >= total_main_segment_duration_us)
+                if (sample_buffer->GetTotalConsumedDuration() >= total_main_segment_duration)
                 {
 					// Wraparound, if total_main_segment_duration_us is wrapped around, continue to pop samples until the total_consumed_duration_us is wrapped around
-					if (sample_buffer->GetTotalConsumedDurationUs() - total_main_segment_duration_us < UINT64_MAX / 2)
+					if (sample_buffer->GetTotalConsumedDuration() - total_main_segment_duration < UINT64_MAX / 2)
 					{
                     	completed_tracks[track_id] = true;
                     	continue;
@@ -390,7 +437,7 @@ namespace mpegts
     void Packager::AddSegment(const std::shared_ptr<Segment> &segment)
     {
 #if 0
-        logtd("AddSegment segment_id %u", segment->GetId());
+        logti("AddSegment segment_id %u", segment->GetId());
         auto file_name = ov::String::FormatString("segment_%u.ts", segment->GetId());
         ov::DumpToFile(file_name.CStr(), segment->GetData());
 #endif 
@@ -422,7 +469,7 @@ namespace mpegts
 	{
 		std::lock_guard<std::shared_mutex> lock(_segments_guard);
 		_segments.emplace(segment->GetId(), segment);
-		_total_segments_duration_us += segment->GetDurationUs();
+		_total_segments_duration_ms += segment->GetDurationMs();
 	}
 	
 	size_t Packager::GetBufferedSegmentCount() const
@@ -450,7 +497,7 @@ namespace mpegts
 		if (it != _segments.end())
 		{
 			_segments.erase(it);
-			_total_segments_duration_us -= segment->GetDurationUs();
+			_total_segments_duration_ms -= segment->GetDurationMs();
 		}
 	}
 
@@ -485,12 +532,12 @@ namespace mpegts
 			// Remove data from segment, it has been saved in a file
 			segment->ResetData();
 			segment->SetFilePath(file_path);
-			_total_file_stored_segments_duration_us += segment->GetDurationUs();
+			_total_file_stored_segments_duration_ms += segment->GetDurationMs();
 			_file_stored_segments.emplace(segment->GetId(), segment);
 		}
 
 		// Delete old segments from stored list and file
-		while (GetTotalFileStoredSegmentsDurationUs() > _config.dvr_window_ms * 1000)
+		while (GetTotalFileStoredSegmentsDurationMs() > _config.dvr_window_ms)
 		{
 			auto oldest_segment = GetOldestSegmentFromFile();
 			
@@ -508,10 +555,10 @@ namespace mpegts
 		}
 	}
 
-	uint64_t Packager::GetTotalFileStoredSegmentsDurationUs() const
+	double Packager::GetTotalFileStoredSegmentsDurationMs() const
 	{
 		std::shared_lock<std::shared_mutex> lock(_file_stored_segments_guard);
-		return _total_file_stored_segments_duration_us;
+		return _total_file_stored_segments_duration_ms;
 	}
 
 	std::shared_ptr<Segment> Packager::GetOldestSegmentFromFile() const
@@ -532,7 +579,7 @@ namespace mpegts
 		auto it = _file_stored_segments.find(segment->GetId());
 		if (it != _file_stored_segments.end())
 		{
-			_total_file_stored_segments_duration_us -= segment->GetDurationUs();
+			_total_file_stored_segments_duration_ms -= segment->GetDurationMs();
 			_file_stored_segments.erase(it);
 		}
 	}

@@ -16,44 +16,9 @@
 #include <modules/bitstream/h265/h265_decoder_configuration_record.h>
 #include <modules/bitstream/nalu/nal_stream_converter.h>
 
-bool DecoderHEVCxXMA::Configure(std::shared_ptr<MediaTrack> context)
-{
-	if (TranscodeDecoder::Configure(context) == false)
-	{
-		return false;
-	}
-
-	// Initialize H.264 stream parser
-	_parser = ::av_parser_init(GetCodecID());
-	if (_parser == nullptr)
-	{
-		logte("Parser not found");
-		return false;
-	}
-	_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
-
-	if (InitCodec() == false)
-	{
-		return false;
-	}
-
-	try
-	{
-		_kill_flag = false;
-
-		_codec_thread = std::thread(&TranscodeDecoder::CodecThread, this);
-		pthread_setname_np(_codec_thread.native_handle(), ov::String::FormatString("Dec%sXMA", avcodec_get_name(GetCodecID())).CStr());
-	}
-	catch (const std::system_error &e)
-	{
-		logte("Failed to start decoder thread");
-		_kill_flag = true;
-
-		return false;
-	}
-
-	return true;
-}
+// The Xilinx Video SDK decoder uses a 32-bit PTS. At some point, it wrap around and becomes negative. 
+// To fix this, we changed it to calculate the PTS outside the codec.
+#define USE_EXTERNAL_TIMESTAMP 	true
 
 bool DecoderHEVCxXMA::InitCodec()
 {
@@ -74,7 +39,7 @@ bool DecoderHEVCxXMA::InitCodec()
 	_context->codec_type = AVMEDIA_TYPE_VIDEO;
 	_context->time_base = ffmpeg::Conv::TimebaseToAVRational(GetTimebase());
 	_context->pkt_timebase = ffmpeg::Conv::TimebaseToAVRational(GetTimebase());
-	
+
 	auto decoder_config = std::static_pointer_cast<HEVCDecoderConfigurationRecord>(GetRefTrack()->GetDecoderConfigurationRecord());
 
 	if (decoder_config != nullptr)
@@ -86,14 +51,14 @@ bool DecoderHEVCxXMA::InitCodec()
 	}
 
 	// Set the SPS/PPS to extradata
-	std::shared_ptr<ov::Data> extra_data = nullptr;
+	std::shared_ptr<const ov::Data> extra_data = nullptr;
 	extra_data = decoder_config != nullptr ? decoder_config->GetData() : nullptr;
 	if (extra_data != nullptr)
 	{
 		_context->extradata_size = extra_data->GetLength();
-		_context->extradata = (uint8_t*)::av_malloc(_context->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+		_context->extradata = (uint8_t *)::av_malloc(_context->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
 		::memset(_context->extradata, 0, _context->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
-		::memcpy(_context->extradata,  reinterpret_cast<const uint8_t *>(extra_data->GetData()), _context->extradata_size);
+		::memcpy(_context->extradata, extra_data->GetData(), _context->extradata_size);
 	}
 
 	::av_opt_set_int(_context->priv_data, "lxlnx_hwdev", _track->GetCodecDeviceId(), 0);
@@ -104,6 +69,14 @@ bool DecoderHEVCxXMA::InitCodec()
 		return false;
 	}
 
+	_parser = ::av_parser_init(GetCodecID());
+	if (_parser == nullptr)
+	{
+		logte("Parser not found");
+		return false;
+	}
+	_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+
 	_change_format = false;
 
 	return true;
@@ -111,10 +84,22 @@ bool DecoderHEVCxXMA::InitCodec()
 
 void DecoderHEVCxXMA::UninitCodec()
 {
-	::avcodec_close(_context);
-	::avcodec_free_context(&_context);
-
+	if (_context != nullptr)
+	{
+		::avcodec_free_context(&_context);
+	}
 	_context = nullptr;
+
+	if (_parser != nullptr)
+	{
+		::av_parser_close(_parser);
+	}
+	_parser = nullptr;
+
+#if USE_EXTERNAL_TIMESTAMP
+	_pts_reorder_list.clear();
+#endif
+
 }
 
 bool DecoderHEVCxXMA::ReinitCodecIfNeed()
@@ -136,9 +121,14 @@ bool DecoderHEVCxXMA::ReinitCodecIfNeed()
 	return true;
 }
 
-
 void DecoderHEVCxXMA::CodecThread()
 {
+	// Initialize the codec and notify the main thread.
+	if(_codec_init_event.Submit(InitCodec()) == false)
+	{
+		return;
+	}
+
 	while (!_kill_flag)
 	{
 		auto obj = _input_buffer.Dequeue();
@@ -165,7 +155,6 @@ void DecoderHEVCxXMA::CodecThread()
 		int64_t dts = (buffer->GetDts() == -1LL) ? AV_NOPTS_VALUE : buffer->GetDts();
 		[[maybe_unused]] int64_t duration = (buffer->GetDuration() == -1LL) ? AV_NOPTS_VALUE : buffer->GetDuration();
 		auto data = packet_data->GetDataAs<uint8_t>();
-		
 
 		while (remained > 0)
 		{
@@ -178,7 +167,7 @@ void DecoderHEVCxXMA::CodecThread()
 				break;
 			}
 
-			if(ReinitCodecIfNeed() == false)
+			if (ReinitCodecIfNeed() == false)
 			{
 				break;
 			}
@@ -199,8 +188,18 @@ void DecoderHEVCxXMA::CodecThread()
 					_pkt->duration = duration;
 				}
 
-				int ret = ::avcodec_send_packet(_context, _pkt);
+				// Keyframe Decode Only
+				// If set to decode only key frames, non-keyframe packets are dropped.
+				if(GetRefTrack()->IsKeyframeDecodeOnly() == true)
+				{
+					// Drop non-keyframe packets
+					if (!(_pkt->flags & AV_PKT_FLAG_KEY))
+					{
+						break;
+					}
+				}
 
+				int ret = ::avcodec_send_packet(_context, _pkt);
 				if (ret == AVERROR(EAGAIN))
 				{
 					// Need more data
@@ -234,6 +233,10 @@ void DecoderHEVCxXMA::CodecThread()
 					logte("An error occurred while sending a packet for decoding: Unhandled error (%d:%s) ", ret, err_msg);
 					break;
 				}
+
+#if USE_EXTERNAL_TIMESTAMP
+				_pts_reorder_list.push_back(_pkt->pts);
+#endif				
 			}
 
 			OV_ASSERT(
@@ -243,7 +246,6 @@ void DecoderHEVCxXMA::CodecThread()
 
 			offset += parsed_size;
 			remained -= parsed_size;
-
 		}
 
 		while (!_kill_flag)
@@ -295,26 +297,28 @@ void DecoderHEVCxXMA::CodecThread()
 				}
 
 				// If there is no duration, the duration is calculated by framerate and timebase.
-				if(_frame->pkt_duration <= 0LL && _context->framerate.num > 0 && _context->framerate.den > 0)
+				if (_frame->pkt_duration <= 0LL && _context->framerate.num > 0 && _context->framerate.den > 0)
 				{
-					_frame->pkt_duration = (int64_t)( ((double)_context->framerate.den / (double)_context->framerate.num) / ((double) GetRefTrack()->GetTimeBase().GetNum() / (double) GetRefTrack()->GetTimeBase().GetDen()) );
+					_frame->pkt_duration = (int64_t)(((double)_context->framerate.den / (double)_context->framerate.num) / ((double)GetRefTrack()->GetTimeBase().GetNum() / (double)GetRefTrack()->GetTimeBase().GetDen()));
 				}
+
+#if USE_EXTERNAL_TIMESTAMP
+				_pts_reorder_list.sort();
+				auto ordered_pts = _pts_reorder_list.front();
+				// logtd("in: %lld, out: %lld (%s), list: %d", ordered_pts, _frame->pts, (ordered_pts == _frame->pts) ? "match" : "No match", _pts_reorder_list.size());
+				_frame->pts = ordered_pts;
+				_pts_reorder_list.pop_front();
+#endif
 
 				auto decoded_frame = ffmpeg::Conv::ToMediaFrame(cmn::MediaType::Video, _frame);
 				if (decoded_frame == nullptr)
 				{
 					continue;
 				}
-
-				// logtd("%d / %d / fmt(%d)", decoded_frame->GetWidth(), decoded_frame->GetHeight(), decoded_frame->GetFormat());
-
 				::av_frame_unref(_frame);
 
 				Complete(need_to_change_notify ? TranscodeResult::FormatChanged : TranscodeResult::DataReady, std::move(decoded_frame));
 			}
-
 		}
-
-
 	}
 }

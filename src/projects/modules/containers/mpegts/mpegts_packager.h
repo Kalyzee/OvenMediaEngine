@@ -11,6 +11,8 @@
 #include <base/info/media_track.h>
 #include <base/mediarouter/media_buffer.h>
 
+#include <modules/marker/marker_box.h>
+
 #include "mpegts_packetizer.h"
 
 namespace mpegts
@@ -20,11 +22,11 @@ namespace mpegts
     class Segment
     {
     public:
-        Segment(uint64_t segment_id, int64_t first_dts, uint64_t duration_us)
+        Segment(uint64_t segment_id, int64_t first_dts, double duration_ms)
         {
             _segment_id = segment_id;
             _first_dts = first_dts;
-            _duration_us = duration_us;
+            _duration_ms = duration_ms;
         }
 
         bool AddPacketData(const std::shared_ptr<const ov::Data> &data)
@@ -66,9 +68,9 @@ namespace mpegts
             return _first_dts;
         }
 
-        uint64_t GetDurationUs() const
+        double GetDurationMs() const
         {
-            return _duration_us;
+            return _duration_ms;
         }
 
 		ov::String GetFilePath() const
@@ -122,10 +124,25 @@ namespace mpegts
 			return nullptr;
 		}
 
+		bool HasMarker() const
+		{
+			return _markers.empty() == false;
+		}
+
+		void SetMarkers(const std::vector<Marker> &markers)
+		{
+			_markers = markers;
+		}
+
+		const std::vector<Marker> &GetMarkers() const
+		{
+			return _markers;
+		}
+
     private:
         uint64_t _segment_id = 0;
         int64_t _first_dts = -1;
-        uint64_t _duration_us = 0;
+        double _duration_ms = 0;
 		ov::String _url;
         
 		ov::String _file_path;
@@ -133,16 +150,29 @@ namespace mpegts
 
 		bool _is_data_in_memory = false;
 		bool _is_data_in_file = false;
+
+		std::vector<Marker> _markers;
     };
 
     struct Sample
     {
-        Sample(const std::shared_ptr<const MediaPacket> &media_packet, const std::shared_ptr<const ov::Data> &ts_packet_data)
+        Sample(const std::shared_ptr<const MediaPacket> &media_packet, const std::shared_ptr<const ov::Data> &ts_packet_data, double timescale)
         {
             this->media_packet = media_packet;
             this->ts_packet_data = ts_packet_data;
+
+			if (media_packet != nullptr)
+			{
+				_pts = (static_cast<double>(media_packet->GetPts()) / timescale * TIMEBASE_DBL);
+				_dts = (static_cast<double>(media_packet->GetDts()) / timescale * TIMEBASE_DBL);
+				_duration = (static_cast<double>(media_packet->GetDuration()) / timescale * TIMEBASE_DBL);
+			}
         }
 
+		int64_t _pts = -1;
+		int64_t _dts = -1;
+		int64_t _duration = -1;
+		
         std::shared_ptr<const MediaPacket> media_packet = nullptr;
         std::shared_ptr<const ov::Data> ts_packet_data = nullptr;
     };
@@ -160,31 +190,29 @@ namespace mpegts
             return _track;
         }
 
-		uint64_t GetSampleDurationUs(const Sample &sample) const
-		{
-			double duration = static_cast<double>(sample.media_packet->GetDuration()) * 1000000.0 / GetTrack()->GetTimeBase().GetTimescale();
-    		return static_cast<uint64_t>(duration);
-		}
-
         bool AddSample(const Sample &sample)
         {
             _samples.push(sample);
 
-            uint64_t duration_us = GetSampleDurationUs(sample);
-
             _current_samples_count++;
-            _current_samples_duration_us += duration_us;
+            _current_samples_duration += sample._duration;
 
 			_total_available_count++;
-			_total_available_duration_us +=	duration_us;
+			_total_available_duration += sample._duration;
 
             return true;
         }
         
-        uint64_t GetCurrentDurationUs() const
+        uint64_t GetCurrentDuration() const
         {
-            return _current_samples_duration_us;
+            return _current_samples_duration;
         }
+
+		double GetCurrentDurationMs() const
+		{
+			// return in milliseconds, sample duration is in 90kHz
+			return static_cast<double>(GetCurrentDuration()) / TIMEBASE_DBL * 1000.0;
+		}
 
         bool HasSegmentBoundary() const
         {
@@ -201,27 +229,39 @@ namespace mpegts
         {
             SegmentBoundary boundary;
             boundary.sample_count = _current_samples_count;
-            boundary.duration_us = _current_samples_duration_us;
+            boundary.duration = _current_samples_duration;
 
             _segment_boundaries.push(boundary);
 
             _current_samples_count = 0;
-            _current_samples_duration_us = 0;
+            _current_samples_duration = 0;
         }
 
-        uint64_t GetDurationUntilSegmentBoundaryUs() const
+        uint64_t GetDurationUntilSegmentBoundary() const
         {
             if (HasSegmentBoundary() == false)
             {
                 return 0;
             }
 
-            return _segment_boundaries.front().duration_us;
+            return _segment_boundaries.front().duration;
         }
 
-		uint64_t GetTotalAvailableDurationUs() const
+		double GetDurationUntilSegmentBoundaryMs() const
 		{
-			return _total_available_duration_us;
+			// return in milliseconds, sample duration is in 90kHz
+			return static_cast<double>(GetDurationUntilSegmentBoundary()) / TIMEBASE_DBL * 1000.0;
+		}
+
+		uint64_t GetTotalAvailableDuration() const
+		{
+			return _total_available_duration;
+		}
+
+		double GetTotalAvailableDurationMs() const
+		{
+			// return in milliseconds, sample duration is in 90kHz
+			return static_cast<double>(GetTotalAvailableDuration()) / TIMEBASE_DBL * 1000.0;
 		}
         
         bool IsEmpty() const
@@ -233,22 +273,20 @@ namespace mpegts
         {
             if (_samples.empty())
             {
-                return Sample(nullptr, nullptr);
+                return Sample(nullptr, nullptr, 0);
             }
 
             auto sample = _samples.front();
             _samples.pop();
 
-            uint64_t sample_duration_us = GetSampleDurationUs(sample);
-
             _current_samples_count--;
-            _current_samples_duration_us -= sample_duration_us;
+            _current_samples_duration -= sample._duration;
 			
 			_total_available_count--;
-			_total_available_duration_us -= sample_duration_us;
+			_total_available_duration -= sample._duration;
 
             _total_consumed_samples_count++;
-            _total_consumed_samples_duration_us += sample_duration_us;
+            _total_consumed_samples_duration += sample._duration;
 			
             return sample;
         }
@@ -257,7 +295,7 @@ namespace mpegts
         {
             if (_samples.empty())
             {
-                return Sample(nullptr, nullptr);
+                return Sample(nullptr, nullptr, 0);
             }
 
             return _samples.front();
@@ -287,18 +325,24 @@ namespace mpegts
             }
 
             _total_consumed_samples_count += boundary.sample_count;
-            _total_consumed_samples_duration_us += boundary.duration_us;
+            _total_consumed_samples_duration += boundary.duration;
 
-			_total_available_duration_us -= boundary.duration_us;
+			_total_available_duration -= boundary.duration;
 			_total_available_count -= boundary.sample_count;
 
             return samples;
         }
 
-        uint64_t GetTotalConsumedDurationUs() const
+        uint64_t GetTotalConsumedDuration() const
         {
-            return _total_consumed_samples_duration_us;
+            return _total_consumed_samples_duration;
         }
+
+		double GetTotalConsumedDurationMs() const
+		{
+			// return in milliseconds, sample duration is in 90kHz
+			return static_cast<double>(GetTotalConsumedDuration()) / TIMEBASE_DBL * 1000.0;
+		}
 
     private:
         std::shared_ptr<const MediaTrack> _track;
@@ -307,19 +351,19 @@ namespace mpegts
         struct SegmentBoundary
         {
             uint64_t sample_count = 0;
-            uint64_t duration_us = 0;
+            uint64_t duration = 0;
         };
 
         std::queue<SegmentBoundary> _segment_boundaries;
 
         uint64_t _current_samples_count = 0;
-        uint64_t _current_samples_duration_us = 0;
+        uint64_t _current_samples_duration = 0;
 
-		uint64_t _total_available_duration_us = 0;
+		uint64_t _total_available_duration = 0;
 		uint64_t _total_available_count = 0;
 
         uint64_t _total_consumed_samples_count = 0;
-        uint64_t _total_consumed_samples_duration_us = 0;
+        uint64_t _total_consumed_samples_duration = 0;
     };
 
 	class PackagerSink : public ov::EnableSharedFromThis<PackagerSink>
@@ -336,7 +380,7 @@ namespace mpegts
 	// DVR off, Retention > 0 	: Buffer --> Retention
 	// DVR on, Retention > 0	: Buffer --> DVR(file) --> Retention(file) 
 	// DVR on, Retention 0		: Buffer --> DVR(file)
-    class Packager : public PacketizerSink
+    class Packager : public PacketizerSink, public MarkerBox
     {
     public:
         struct Config
@@ -397,7 +441,7 @@ namespace mpegts
 		void SaveSegmentToFile(const std::shared_ptr<Segment> &segment);
 		void DeleteSegmentFile(const std::shared_ptr<Segment> &segment);
 		void DeleteSegmentFromFileStoredList(const std::shared_ptr<Segment> &segment);
-		uint64_t GetTotalFileStoredSegmentsDurationUs() const;
+		double GetTotalFileStoredSegmentsDurationMs() const;
 		std::shared_ptr<Segment> GetOldestSegmentFromFile() const;
 		
 		// Retention
@@ -412,9 +456,12 @@ namespace mpegts
 
 		ov::String GetDvrStoragePath() const;
 		ov::String GetSegmentFilePath(uint64_t segment_id) const;
-        
+       
         ov::String _packager_id;
         Config _config;
+
+		// make segment boundary as soon as possible
+		bool _force_make_boundary = false;
 
         // track_id -> SampleBuffer
         std::map<uint32_t, std::shared_ptr<SampleBuffer>> _sample_buffers;
@@ -427,11 +474,11 @@ namespace mpegts
         uint64_t _last_segment_id = 0;
 
         std::map<uint64_t, std::shared_ptr<Segment>> _segments;
-		uint64_t _total_segments_duration_us = 0;
+		double _total_segments_duration_ms = 0;
 		mutable std::shared_mutex _segments_guard;
 
 		std::map<uint64_t, std::shared_ptr<Segment>> _file_stored_segments;
-		uint64_t _total_file_stored_segments_duration_us = 0;
+		double _total_file_stored_segments_duration_ms = 0;
 		mutable std::shared_mutex _file_stored_segments_guard;
 
 		std::map<uint64_t, std::shared_ptr<Segment>> _retained_segments;

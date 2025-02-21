@@ -17,7 +17,7 @@
 
 namespace pub
 {
-	class PushStream : public pub::Stream
+	class PushStream final : public pub::Stream
 	{
 	public:
 		static std::shared_ptr<PushStream> Create(const std::shared_ptr<pub::Application> application,
@@ -30,7 +30,7 @@ namespace pub
 		void SendFrame(const std::shared_ptr<MediaPacket> &media_packet);
 		void SendVideoFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 		void SendAudioFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
-		void SendDataFrame(const std::shared_ptr<MediaPacket> &media_packet) override {}  // Not supported
+		void SendDataFrame(const std::shared_ptr<MediaPacket> &media_packet) override;
 
 		std::shared_ptr<pub::Session> CreatePushSession(std::shared_ptr<info::Push> &push) override;
 

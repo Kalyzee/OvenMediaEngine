@@ -39,6 +39,12 @@ bool EncoderHEVCxNILOGAN::SetCodecParams()
 		_codec_context->gop_size = (GetRefTrack()->GetKeyFrameInterval() == 0) ? (_codec_context->framerate.num / _codec_context->framerate.den) : GetRefTrack()->GetKeyFrameInterval();
 	}
 
+	// Lookahead
+	if (GetRefTrack()->GetLookaheadByConfig() >= 0)
+	{
+		av_opt_set_int(_codec_context->priv_data, "rc-lookahead", GetRefTrack()->GetLookaheadByConfig(), 0);
+	}
+
 	//disable b-frames
 	/*
 	1 : I-I-I-I,..I (all intra, gop_size=1)
@@ -61,17 +67,8 @@ bool EncoderHEVCxNILOGAN::SetCodecParams()
 	return true;
 }
 
-// Notes.
-//
-// - B-frame must be disabled. because, WEBRTC does not support B-Frame.
-//
-bool EncoderHEVCxNILOGAN::Configure(std::shared_ptr<MediaTrack> context)
+bool EncoderHEVCxNILOGAN::InitCodec()
 {
-	if (TranscodeEncoder::Configure(context) == false)
-	{
-		return false;
-	}
-
 	auto codec_id = GetCodecID();
 
 	const AVCodec *codec = ::avcodec_find_encoder_by_name("h265_ni_logan_enc");
@@ -88,7 +85,7 @@ bool EncoderHEVCxNILOGAN::Configure(std::shared_ptr<MediaTrack> context)
 		return false;
 	}
 	
-	_codec_context->hw_device_ctx = ::av_buffer_ref(TranscodeGPU::GetInstance()->GetDeviceContext(cmn::MediaCodecModuleId::NILOGAN, context->GetCodecDeviceId()));
+	_codec_context->hw_device_ctx = ::av_buffer_ref(TranscodeGPU::GetInstance()->GetDeviceContext(cmn::MediaCodecModuleId::NILOGAN, _track->GetCodecDeviceId()));
 	if(_codec_context->hw_device_ctx == nullptr)
 	{
 		logte("Could not allocate hw device context for %s (%d)", ::avcodec_get_name(codec_id), codec_id);
@@ -107,19 +104,34 @@ bool EncoderHEVCxNILOGAN::Configure(std::shared_ptr<MediaTrack> context)
 		return false;
 	}
 
-	// Generates a thread that reads and encodes frames in the input_buffer queue and places them in the output queue.
+	return true;
+}
+
+bool EncoderHEVCxNILOGAN::Configure(std::shared_ptr<MediaTrack> context)
+{
+	if (TranscodeEncoder::Configure(context) == false)
+	{
+		return false;
+	}
+
 	try
 	{
 		_kill_flag = false;
 
 		_codec_thread = std::thread(&EncoderHEVCxNILOGAN::CodecThread, this);
-		pthread_setname_np(_codec_thread.native_handle(), ov::String::FormatString("Enc%sNilogan", avcodec_get_name(GetCodecID())).CStr());
+		pthread_setname_np(_codec_thread.native_handle(), ov::String::FormatString("ENC-%s-t%d", avcodec_get_name(GetCodecID()), _track->GetId()).CStr());
+
+		// Initialize the codec and wait for completion.
+		if(_codec_init_event.Get() == false)
+		{
+			_kill_flag = true;
+			return false;
+		}
 	}
 	catch (const std::system_error &e)
 	{
 		_kill_flag = true;
-
-		logte("Failed to start transcode stream thread.");
+		return false;
 	}
 
 	return true;

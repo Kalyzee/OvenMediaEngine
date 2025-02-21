@@ -63,6 +63,13 @@ public:
 		return _src_height;
 	}
 
+	// 	If the input track and output track are the same, the filter is used for a single track.
+	// The main goal of this filter is to handle frame drops.
+	bool IsSingleTrack() const
+	{
+		return (_input_track == _output_track)? true : false;
+	}
+
 	void SetCompleteHandler(CompleteHandler complete_handler) {
 		_complete_handler = complete_handler;
 	}
@@ -101,6 +108,21 @@ public:
 		}
 	}
 
+	void SetInputTrack(std::shared_ptr<MediaTrack> input_track)
+	{
+		_input_track = input_track;
+	}
+
+	void SetOutputTrack(std::shared_ptr<MediaTrack> output_track)
+	{
+		_output_track = output_track;
+	}
+
+	int32_t GetBufferSize() const
+	{
+		return _input_buffer.Size();
+	}
+
 protected:
 
 	std::atomic<State> _state = State::CREATED;
@@ -125,8 +147,8 @@ protected:
 
 	const AVFilter *_buffersrc = nullptr;
 	const AVFilter *_buffersink = nullptr;
-	
-	// double _scale = 0.0;
+
+	ov::Future _codec_init_event;
 
 	// resolution of the input video frame
 	std::shared_ptr<MediaTrack> _input_track;
@@ -138,4 +160,6 @@ protected:
 	CompleteHandler _complete_handler;
 
 	bool _use_hwframe_transfer = false;
+
+	int32_t _source_id = 0;
 };

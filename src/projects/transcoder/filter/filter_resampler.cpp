@@ -103,11 +103,17 @@ bool FilterResampler::InitializeFilterDescription()
 {
 	std::vector<ov::String> filters;
 
-	filters.push_back(ov::String::FormatString("asettb=%s", _output_track->GetTimeBase().GetStringExpr().CStr()));
-	filters.push_back(ov::String::FormatString("aresample=async=1000"));
-	filters.push_back(ov::String::FormatString("aresample=%d", _output_track->GetSampleRate()));
-	filters.push_back(ov::String::FormatString("aformat=sample_fmts=%s:channel_layouts=%s", _output_track->GetSample().GetName(), _output_track->GetChannel().GetName()));
-	filters.push_back(ov::String::FormatString("asetnsamples=n=%d", _output_track->GetAudioSamplesPerFrame()));
+	if(IsSingleTrack())
+	{
+		filters.push_back(ov::String::FormatString("aresample=async=1"));
+		filters.push_back(ov::String::FormatString("asetnsamples=n=%d", _output_track->GetAudioSamplesPerFrame()));
+	}
+	else
+	{
+		filters.push_back(ov::String::FormatString("asettb=%s", _output_track->GetTimeBase().GetStringExpr().CStr()));
+		filters.push_back(ov::String::FormatString("aresample=%d", _output_track->GetSampleRate()));
+		filters.push_back(ov::String::FormatString("aformat=sample_fmts=%s:channel_layouts=%s", _output_track->GetSample().GetName(), _output_track->GetChannel().GetName()));
+	}
 
 	if (filters.size() == 0)
 	{
@@ -182,13 +188,20 @@ bool FilterResampler::Configure(const std::shared_ptr<MediaTrack> &input_track, 
 
 bool FilterResampler::Start()
 {
-	// Generates a thread that reads and encodes frames in the input_buffer queue and places them in the output queue.
+	_source_id = ov::Random::GenerateInt32();
+
 	try
 	{
 		_kill_flag = false;
 
 		_thread_work = std::thread(&FilterResampler::WorkerThread, this);
-		pthread_setname_np(_thread_work.native_handle(), "Resampler");
+		pthread_setname_np(_thread_work.native_handle(), ov::String::FormatString("FLT-rsmp-t%u", _output_track->GetId()).CStr());
+		if (_codec_init_event.Get() == false)
+		{
+			_kill_flag = false;
+
+			return false;
+		}		
 	}
 	catch (const std::system_error &e)
 	{
@@ -214,7 +227,7 @@ void FilterResampler::Stop()
 	{
 		_thread_work.join();
 
-		logtd("resampler filter thread has ended");
+		logtd("filter resampler thread has ended");
 	}
 
 	SetState(State::STOPPED);
@@ -222,7 +235,15 @@ void FilterResampler::Stop()
 
 void FilterResampler::WorkerThread()
 {
+	auto result = Configure(_input_track, _output_track);
+	if (_codec_init_event.Submit(result) == false)
+	{
+		return;
+	}
+
 	int ret;
+
+	SetState(State::STARTED);
 
 	while (!_kill_flag)
 	{
@@ -243,6 +264,8 @@ void FilterResampler::WorkerThread()
 
 			break;
 		}
+
+		// logtw("Resampled in frame. pts: %lld, linesize: %d, samples: %d", av_frame->pts, av_frame->linesize[0], av_frame->nb_samples);
 
 		ret = ::av_buffersrc_write_frame(_buffersrc_ctx, av_frame);
 		if (ret < 0)
@@ -279,6 +302,7 @@ void FilterResampler::WorkerThread()
 			}
 			else
 			{
+				// logti("Resampled out frame. pts: %lld, linesize: %d, samples : %d", _frame->pts, _frame->linesize[0], _frame->nb_samples);
 				auto output_frame = ffmpeg::Conv::ToMediaFrame(cmn::MediaType::Audio, _frame);
 				::av_frame_unref(_frame);
 				if (output_frame == nullptr)
@@ -287,6 +311,8 @@ void FilterResampler::WorkerThread()
 
 					continue;
 				}
+
+				output_frame->SetSourceId(_source_id);
 
 				Complete(std::move(output_frame));
 			}

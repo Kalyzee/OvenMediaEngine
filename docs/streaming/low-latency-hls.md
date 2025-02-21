@@ -72,27 +72,7 @@ See the [Adaptive Bitrates Streaming](../transcoding/#adaptive-bitrates-streamin
 
 ## CrossDomain
 
-Most browsers and players prohibit accessing other domain resources in the currently running domain. You can control this situation through Cross-Origin Resource Sharing (CORS) or Cross-Domain (CrossDomain). You can set CORS and Cross-Domain as `<CrossDomains>` element.
-
-{% code title="Server.xml" %}
-```markup
-<CrossDomains>
-    <Url>*</Url>
-    <Url>*.airensoft.com</Url>
-    <Url>http://*.ovenplayer.com</Url>
-    <Url>https://demo.ovenplayer.com</Url>
-</CrossDomains>
-```
-{% endcode %}
-
-You can set it using the `<Url>` element as shown above, and you can use the following values:
-
-| Url Value      | Description                                                   |
-| -------------- | ------------------------------------------------------------- |
-| \*             | Allows requests from all Domains                              |
-| domain         | Allows both HTTP and HTTPS requests from the specified Domain |
-| http://domain  | Allows HTTP requests from the specified Domain                |
-| https://domain | Allows HTTPS requests from the specified Domain               |
+For information on CrossDomains, see [CrossDomains ](../crossdomains.md)chapter.
 
 ## Streaming
 
@@ -199,7 +179,80 @@ The folder to output to. In the OutputPath you can use the macros shown in the t
 | ${z}          | UTC offset (ex: +0900)         |
 | ${ISO8601}    | Current time in ISO8601 format |
 
-## DRM (beta)
+## Multiple Audio Track (Multilingual Audio)
+
+OvenMediaEngine supports Multiple Audio Tracks in LLHLS. When multiple audio signals are input through a Provider, the LLHLS Publisher can utilize them to provide multiple audio tracks.
+
+<figure><img src="../.gitbook/assets/image (1).png" alt=""><figcaption></figcaption></figure>
+
+By simply sending multiple audio signals through SRT or Scheduled Channel, the LLHLS Publisher can provide multiple audio tracks. For example, to send multiple audio signals via SRT from OBS, you need to select multiple Audio Tracks and configure the Advanced Audio Properties to assign the appropriate audio to each track.
+
+<figure><img src="../.gitbook/assets/image (2).png" alt=""><figcaption></figcaption></figure>
+
+<figure><img src="../.gitbook/assets/image (3).png" alt=""><figcaption></figcaption></figure>
+
+Since the incoming audio signals do not have labels, you can enhance usability by assigning labels to each audio signal as follows.
+
+### Labeling in SRT Provider
+
+To assign labels to audio signals in the SRT Provider, configure the AudioMap as shown below:
+
+```xml
+<Application>
+  <Providers>
+    <SRT>
+      <AudioMap>
+        <Item>
+          <Name>English</Name> 
+          <Language>en</Language> <!-- Optioanl, RFC 5646 -->
+          <Characteristics>public.accessibility.describes-video</Characteristics> <!-- Optional -->
+        </Item>
+        <Item>
+          <Name>Korean</Name>
+          <Language>ko</Language> <!-- Optioanl, RFC 5646 -->
+          <Characteristics>public.alternate</Characteristics> <!-- Optional -->
+        </Item>
+        <Item>
+          <Name>Japanese</Name>
+          <Language>ja</Language> <!-- Optioanl, RFC 5646 -->
+          <Characteristics>public.alternate</Characteristics> <!-- Optional -->
+        </Item>
+      </AudioMap>
+   ...
+```
+
+### Labeling in Scheduled Channel
+
+```xml
+<?xml version="1.0"?>
+<Schedule>
+  <Stream>
+    <Name>today</Name>
+    <BypassTranscoder>false</BypassTranscoder>
+    <VideoTrack>true</VideoTrack>
+    <AudioTrack>true</AudioTrack>
+    <AudioMap>
+      <Item>
+        <Name>English</Name>
+        <Language>en</Language> <!-- Optioanl, RFC 5646 -->
+        <Characteristics>public.accessibility.describes-video</Characteristics> <!-- Optional -->
+      </Item>
+      <Item>
+        <Name>Korean</Name>
+        <Language>ko</Language> <!-- Optioanl, RFC 5646 -->
+        <Characteristics>public.alternate</Characteristics> <!-- Optional -->
+      </Item>
+      <Item>
+        <Name>Japanese</Name>
+        <Language>ja</Language> <!-- Optioanl, RFC 5646 -->
+        <Characteristics>public.alternate</Characteristics> <!-- Optional -->
+      </Item>
+    </AudioMap>
+```
+
+
+
+## DRM
 
 OvenMediaEngine supports Widevine and Fairplay in LLHLS with simple setup since version 0.16.0.
 

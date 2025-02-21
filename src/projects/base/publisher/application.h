@@ -70,8 +70,8 @@ namespace pub
 
 		ov::ManagedQueue<std::shared_ptr<StreamData>> _stream_data_queue;
 
-		int64_t	_last_video_ts_ms = 0;
-		int64_t	_last_audio_ts_ms = 0;
+		[[maybe_unused]] int64_t _last_video_ts_ms = 0;
+		[[maybe_unused]] int64_t _last_audio_ts_ms = 0;
 
 		std::atomic<uint32_t> _stream_count = 0;
 	};
@@ -95,6 +95,19 @@ namespace pub
 		uint32_t GetStreamCount();
 		std::shared_ptr<Stream> GetStream(uint32_t stream_id);
 		std::shared_ptr<Stream> GetStream(ov::String stream_name);
+		template <typename T>
+		std::enable_if_t<std::is_base_of<Stream, T>::value, std::shared_ptr<T>>
+		GetStreamAs(uint32_t stream_id)
+		{
+			return std::dynamic_pointer_cast<T>(GetStream(stream_id));
+		}
+
+		template <typename T>
+		std::enable_if_t<std::is_base_of<Stream, T>::value, std::shared_ptr<T>>
+		GetStreamAs(ov::String stream_name)
+		{
+			return std::dynamic_pointer_cast<T>(GetStream(stream_name));
+		}
 
 		virtual bool Start();
 		virtual bool Stop();

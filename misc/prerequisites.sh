@@ -19,13 +19,16 @@ PCRE2_VERSION=10.39
 OPENH264_VERSION=2.4.0
 HIREDIS_VERSION=1.0.2
 NVCC_HDR_VERSION=11.1.5.2
-
+X264_VERSION=31e19f92
+WEBP_VERSION=1.5.0
 INTEL_QSV_HWACCELS=false
 NETINT_LOGAN_HWACCELS=false
 NETINT_LOGAN_PATCH_PATH=""
 NETINT_LOGAN_XCODER_COMPILE_PATH=""
 NVIDIA_NV_CODEC_HWACCELS=false
 XILINX_XMA_CODEC_HWACCELS=false
+VIDEOLAN_X264_CODEC=true
+
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
     NCPU=$(sysctl -n hw.ncpu)
@@ -101,6 +104,22 @@ install_libopus()
     rm -rf ${DIR}) || fail_exit "opus"
 }
 
+install_libx264()
+{
+    if [ "$VIDEOLAN_X264_CODEC" = false ] ; then
+        return
+    fi
+
+    (DIR=${TEMP_PATH}/x264 && \
+    mkdir -p ${DIR} && \
+    cd ${DIR} && \
+    curl -sLf https://code.videolan.org/videolan/x264/-/archive/master/x264-${X264_VERSION}.tar.bz2 | tar -jx --strip-components=1 && \
+    ./configure --prefix="${PREFIX}" --enable-shared --enable-pic --disable-cli && \
+    make -j$(nproc) && \
+    sudo make install && \
+    rm -rf ${DIR}) || fail_exit "x264"
+}
+
 install_libopenh264()
 {
     (DIR=${TEMP_PATH}/openh264 && \
@@ -152,6 +171,18 @@ install_libvpx()
     make -j$(nproc) && \
     sudo make install && \
     rm -rf ${DIR}) || fail_exit "vpx"
+}
+
+install_libwebp()
+{
+    (DIR=${TEMP_PATH}/webp && \
+    mkdir -p ${DIR} && \
+    cd ${DIR} && \
+    curl -sSLf https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${WEBP_VERSION}.tar.gz | tar -xz --strip-components=1 && \
+    ./configure --prefix="${PREFIX}" --enable-shared --disable-static && \
+    make -j$(nproc) && \
+    sudo make install && \
+    rm -rf ${DIR}) || fail_exit "webp"
 }
 
 install_fdk_aac()
@@ -233,11 +264,11 @@ install_ffmpeg()
         ADDI_CFLAGS+="-I/usr/local/cuda/include "
         ADDI_LDFLAGS="-L/usr/local/cuda/lib64 "
         ADDI_LICENSE+=" --enable-nonfree "
-        ADDI_LIBS+=" --enable-cuda-nvcc --enable-cuda-llvm --enable-libnpp --enable-nvenc --enable-nvdec --enable-ffnvcodec --enable-cuvid "
+        ADDI_LIBS+=" --enable-cuda-nvcc --enable-cuda-llvm --enable-nvenc --enable-nvdec --enable-ffnvcodec --enable-cuvid "
         ADDI_HWACCEL="--enable-hwaccel=cuda,cuvid "
         ADDI_ENCODER+=",h264_nvenc,hevc_nvenc"
         ADDI_DECODER+=",h264_nvdec,hevc_nvdec,h264_cuvid,hevc_cuvid"
-        ADDI_FILTERS+=",scale_cuda,scale_npp,hwdownload,hwupload,hwupload_cuda"
+        ADDI_FILTERS+=",scale_cuda,hwdownload,hwupload,hwupload_cuda"
 
         PATH=$PATH:/usr/local/nvidia/bin:/usr/local/cuda/bin
     fi
@@ -252,6 +283,12 @@ install_ffmpeg()
         ADDI_CFLAGS+=" -I/opt/xilinx/xrt/include/xma2 "
         ADDI_LDFLAGS+="-L/opt/xilinx/xrt/lib -L/opt/xilinx/xrm/lib  -Wl,-rpath,/opt/xilinx/xrt/lib,-rpath,/opt/xilinx/xrm/lib"
         ADDI_EXTRA_LIBS+="--extra-libs=-lxma2api --extra-libs=-lxrt_core --extra-libs=-lxrm --extra-libs=-lxrt_coreutil --extra-libs=-lpthread --extra-libs=-ldl "
+    fi
+
+    if [ "$VIDEOLAN_X264_CODEC" == true ]; then
+        ADDI_LIBS+=" --enable-libx264 "
+        ADDI_ENCODER+=",libx264"
+        ADDI_LICENSE+=" --enable-gpl --enable-nonfree "
     fi
 
     # Options are added by external scripts.
@@ -283,6 +320,8 @@ install_ffmpeg()
         # Download FFmpeg for xilinx video sdk 3.0
 	    (rm -rf ${DIR}  && mkdir -p ${DIR} && \
 	    git clone --depth=1 --branch U30_GA_3 https://github.com/Xilinx/app-ffmpeg4-xma.git ${DIR}) || fail_exit "ffmpeg"	
+        # Compatible with nvcc 10.x and later
+        (cd ${DIR} && sed -i 's/compute_30/compute_50/g' configure &&  sed -i 's/sm_30/sm_50/g' configure) || fail_exit "ffmpeg"
     fi
 	
     # If there is an enable-nilogan option, add patch from libxcoder_logan-path 
@@ -317,10 +356,10 @@ install_ffmpeg()
     --extra-libs=-ldl ${ADDI_EXTRA_LIBS} \
     ${ADDI_LICENSE} \
     --disable-everything --disable-programs --disable-avdevice --disable-dwt --disable-lsp --disable-lzo --disable-faan --disable-pixelutils \
-    --enable-shared --enable-zlib --enable-libopus --enable-libvpx --enable-libfdk_aac --enable-libopenh264 --enable-openssl --enable-network --enable-libsrt --enable-dct --enable-rdft  ${ADDI_LIBS} \
+    --enable-shared --enable-zlib --enable-libopus --enable-libvpx --enable-libfdk_aac --enable-libopenh264 --enable-openssl --enable-network --enable-libsrt --enable-dct --enable-rdft --enable-libwebp ${ADDI_LIBS} \
     ${ADDI_HWACCEL} \
     --enable-ffmpeg \
-    --enable-encoder=libvpx_vp8,libopus,libfdk_aac,libopenh264,mjpeg,png${ADDI_ENCODER} \
+    --enable-encoder=libvpx_vp8,libopus,libfdk_aac,libopenh264,mjpeg,png,libwebp${ADDI_ENCODER} \
     --enable-decoder=aac,aac_latm,aac_fixed,mp3float,mp3,h264,hevc,opus,vp8${ADDI_DECODER} \
     --enable-parser=aac,aac_latm,aac_fixed,h264,hevc,opus,vp8 \
     --enable-protocol=tcp,udp,rtp,file,rtmp,tls,rtmps,libsrt \
@@ -512,7 +551,15 @@ case $i in
     --enable-xma)
     XILINX_XMA_CODEC_HWACCELS=true
     shift
-    ;;    
+    ;;
+    --disable-x264)
+    VIDEOLAN_X264_CODEC=false
+    shift
+    ;;
+    --enable-x264)
+    VIDEOLAN_X264_CODEC=true
+    shift
+    ;;
     *)
             # unknown option
     ;;
@@ -560,7 +607,9 @@ install_libsrtp
 install_libsrt
 install_libopus
 install_libopenh264
+install_libx264
 install_libvpx
+install_libwebp
 install_fdk_aac
 install_nvcc_hdr
 install_ffmpeg

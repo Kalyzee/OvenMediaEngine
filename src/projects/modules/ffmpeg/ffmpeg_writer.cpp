@@ -115,6 +115,7 @@ namespace ffmpeg
 
 	bool Writer::AddTrack(const std::shared_ptr<MediaTrack> &media_track)
 	{
+		// TODO: This code will move to mediarouter.
 		if (media_track->GetCodecId() == cmn::MediaCodecId::Opus &&
 			media_track->GetDecoderConfigurationRecord() == nullptr)
 		{
@@ -225,7 +226,7 @@ namespace ffmpeg
 		return true;
 	}
 
-	bool Writer::SendPacket(const std::shared_ptr<MediaPacket> &packet)
+	bool Writer::SendPacket(const std::shared_ptr<MediaPacket> &packet, uint64_t *sent_bytes)
 	{
 		if (!packet)
 		{
@@ -276,6 +277,7 @@ namespace ffmpeg
 			switch (packet->GetBitstreamFormat())
 			{
 				case cmn::BitstreamFormat::H264_AVCC:
+					// Do nothing
 					break;
 				case cmn::BitstreamFormat::H264_ANNEXB: {
 					new_data = NalStreamConverter::ConvertAnnexbToXvcc(packet->GetData(), packet->GetFragHeader());
@@ -301,9 +303,12 @@ namespace ffmpeg
 					av_packet.data = (uint8_t *)new_data->GetDataAs<uint8_t>();
 				}
 				break;
+				case cmn::BitstreamFormat::AMF:
+					// Do nothing
+					break;
 				default:
-					// Unsupported bitstream foramt
-					return false;
+					// Unsupported bitstream foramt, but it is not an error.
+					return true;
 			}
 		}
 		else if (_output_format_name == "mp4")
@@ -352,13 +357,28 @@ namespace ffmpeg
 				break;
 
 				default:
-					// Unsupported bitstream foramt
-					return false;
+					// Unsupported bitstream foramt, but it is not an error.
+					return true;
 			}
 		}
-		else if (_output_format_name == "mpegts")
+		else if (_output_format_name == "mpegts") // TS, SRT
 		{
-			// Passthrough
+			switch(packet->GetBitstreamFormat())
+			{
+				case cmn::BitstreamFormat::H264_ANNEXB:
+				case cmn::BitstreamFormat::H264_AVCC:
+				case cmn::BitstreamFormat::H265_ANNEXB:
+				case cmn::BitstreamFormat::HVCC:
+				case cmn::BitstreamFormat::AAC_RAW:
+				case cmn::BitstreamFormat::AAC_ADTS:
+				case cmn::BitstreamFormat::AAC_LATM:
+				case cmn::BitstreamFormat::OPUS:
+				case cmn::BitstreamFormat::MP3:
+					break;
+				default:
+					// Unsupported bitstream foramt, but it is not an error.
+					return true;
+			}
 		}
 
 		auto av_format = GetAVFormatContext();
@@ -366,12 +386,20 @@ namespace ffmpeg
 		{
 			av_packet_unref(&av_packet);
 			SetState(WriterStateError);
+
 			return false;
 		}
 
 		_last_packet_sent_time = std::chrono::high_resolution_clock::now();
 
-		int error = av_interleaved_write_frame(av_format.get(), &av_packet);
+		if (sent_bytes != nullptr)
+		{
+			*sent_bytes = av_packet.size;
+		}
+
+		std::unique_lock<std::shared_mutex> mlock(_av_format_lock);
+
+		int error = ::av_write_frame(av_format.get(), &av_packet);
 		if (error != 0)
 		{
 			SetState(WriterStateError);
@@ -380,6 +408,8 @@ namespace ffmpeg
 
 			return false;
 		}
+
+		mlock.unlock();
 
 		return true;
 	}

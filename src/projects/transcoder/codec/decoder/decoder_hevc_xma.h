@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../../transcoder_decoder.h"
+#include <list>
 
 class DecoderHEVCxXMA : public TranscodeDecoder
 {
@@ -23,11 +24,13 @@ public:
 		return AV_CODEC_ID_H265;
 	}
 
-	bool Configure(std::shared_ptr<MediaTrack> context) override;
-	
 	bool InitCodec();
 	void UninitCodec();
 	bool ReinitCodecIfNeed();
 
 	void CodecThread() override;
+
+private:
+	[[maybe_unused]]
+	std::list<int64_t> _pts_reorder_list;	
 };

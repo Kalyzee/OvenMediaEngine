@@ -202,6 +202,18 @@ namespace pub
 	{
 	}
 
+	std::shared_ptr<const info::Playlist> Stream::GetDefaultPlaylist() const
+	{
+		auto info = GetDefaultPlaylistInfo();
+
+		if (info != nullptr)
+		{
+			return GetPlaylist(info->file_name);
+		}
+
+		return nullptr;
+	}
+
 	bool Stream::Start()
 	{
 		if (_state != State::CREATED)
@@ -209,7 +221,7 @@ namespace pub
 			return false;
 		}
 
-		logti("%s application has started [%s(%u)] stream (MSID : %d)", GetApplicationTypeName(), GetName().CStr(), GetId(), GetMsid());
+		logti("%s has started [%s(%u)] stream (MSID : %d)", GetApplicationTypeName(), GetName().CStr(), GetId(), GetMsid());
 
 		_started_time = std::chrono::system_clock::now();
 		_state = State::STARTED;

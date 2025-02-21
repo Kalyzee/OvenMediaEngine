@@ -48,12 +48,10 @@ namespace pub
 			auto records_info = GetRecordInfoFromFile(stream_map_config.GetPath(), info);
 			for (auto record : records_info)
 			{
-				record->SetByConfig(true);
-
 				auto result = RecordStart(record);
 				if (result->GetCode() != FilePublisher::FilePublisherStatusCode::Success)
 				{
-					logtw("FileStream(%s/%s) - Failed to start record(%s) status(%d) description(%s)", GetVHostAppName().CStr(), info->GetName().CStr(), record->GetId().CStr(), result->GetCode(), result->GetMessage().CStr());
+					logtw("FileStream(%s/%s) - Failed to start record. id(%s) status(%d) description(%s)", GetVHostAppName().CStr(), info->GetName().CStr(), record->GetId().CStr(), result->GetCode(), result->GetMessage().CStr());
 				}
 			}
 		}
@@ -82,7 +80,7 @@ namespace pub
 			auto result = RecordStop(record_info);
 			if (result->GetCode() != FilePublisher::FilePublisherStatusCode::Success)
 			{
-				logtw("FileStream(%s/%s) - Failed to start record(%s) status(%d) description(%s)", GetVHostAppName().CStr(), info->GetName().CStr(), record_info->GetId().CStr(), result->GetCode(), result->GetMessage().CStr());
+				logtw("FileStream(%s/%s) - Failed to stop record. id(%s) status(%d) description(%s)", GetVHostAppName().CStr(), info->GetName().CStr(), record_info->GetId().CStr(), result->GetCode(), result->GetMessage().CStr());
 			}
 		}
 
@@ -100,10 +98,11 @@ namespace pub
 		{
 			// State of disconnected and ready to connect
 			case pub::Session::SessionState::Ready:
-				session->Start();
-				break;
+				[[fallthrough]];
 			case pub::Session::SessionState::Stopped:
 				session->Start();
+				logti("Recording Started. %s", session->GetRecord()->GetInfoString().CStr());
+
 				break;
 			// State of Recording
 			case pub::Session::SessionState::Started:
@@ -133,6 +132,7 @@ namespace pub
 		{
 			case pub::Session::SessionState::Started:
 				session->Stop();
+				logti("Recording Stopped. %s", session->GetRecord()->GetInfoString().CStr());
 				break;
 			default:
 				break;
@@ -149,30 +149,26 @@ namespace pub
 	{
 		// If there is no session, create a new file(record) session.
 		auto session = std::static_pointer_cast<FileSession>(stream->GetSession(userdata->GetSessionId()));
-		if (session == nullptr)
+		if (session == nullptr || userdata->GetSessionId() == 0)
 		{
 			session = stream->CreateSession();
 			if (session == nullptr)
 			{
-				logte("Could not create session");
+				logte("Failed to create session");
 				return;
 			}
 			userdata->SetSessionId(session->GetId());
-
 			session->SetRecord(userdata);
 		}
 
 		if (userdata->GetEnable() == true && userdata->GetRemove() == false)
 		{
 			SessionStart(session);
-			logti("Recording Started. %s", userdata->GetInfoString().CStr());
 		}
 
 		if (userdata->GetEnable() == false || userdata->GetRemove() == true)
 		{
 			SessionStop(session);
-			logti("Recording Completed. %s", userdata->GetInfoString().CStr());
-
 		}
 	}
 
@@ -297,6 +293,9 @@ namespace pub
 		record->SetTransactionId(ov::Random::GenerateString(16));
 		record->SetEnable(true);
 		record->SetRemove(false);
+		// @see AppActionsController::OnPostStartRecord, FileApplication::GetRecordInfoFromFile
+		// record->SetByConfig(false);
+		record->SetSessionId(0);
 		record->SetFilePathSetByUser((record->GetFilePath().IsEmpty() != true) ? true : false);
 		record->SetInfoPathSetByUser((record->GetInfoPath().IsEmpty() != true) ? true : false);
 
@@ -383,26 +382,31 @@ namespace pub
 	{
 		std::vector<std::shared_ptr<info::Record>> results;
 
-		ov::String final_path = ov::GetFilePath(file_path, cfg::ConfigManager::GetInstance()->GetConfigPath());
+		ov::String real_path = ov::GetFilePath(file_path, cfg::ConfigManager::GetInstance()->GetConfigPath());
 
 		pugi::xml_document xml_doc;
-		auto load_result = xml_doc.load_file(final_path.CStr());
+		auto load_result = xml_doc.load_file(real_path.CStr());
 		if (load_result == false)
 		{
-			logte("FileStream(%s/%s) - Failed to load Record info file(%s) status(%d) description(%s)", GetVHostAppName().CStr(), stream_info->GetName().CStr(), final_path.CStr(), load_result.status, load_result.description());
+			logte("FileStream(%s/%s) - Failed to load Record info file(%s) status(%d) description(%s)", GetVHostAppName().CStr(), stream_info->GetName().CStr(), real_path.CStr(), load_result.status, load_result.description());
 			return results;
 		}
 
 		auto root_node = xml_doc.child("RecordInfo");
 		if (root_node.empty())
 		{
-			logte("FileStream(%s/%s) - Failed to load Record info file(%s) because root node is not found", GetVHostAppName().CStr(), stream_info->GetName().CStr(), final_path.CStr());
+			logte("FileStream(%s/%s) - Failed to load Record info file(%s) because root node is not found", GetVHostAppName().CStr(), stream_info->GetName().CStr(), real_path.CStr());
 			return results;
 		}
 
 		for (pugi::xml_node record_node = root_node.child("Record"); record_node; record_node = record_node.next_sibling("Record"))
 		{
 			bool enable = (strcmp(record_node.child_value("Enable"), "true") == 0) ? true : false;
+			if (enable == false)
+			{
+				continue;
+			}
+
 			ov::String target_stream_name = record_node.child_value("StreamName");
 			ov::String file_path = record_node.child_value("FilePath");
 			ov::String info_path = record_node.child_value("InfoPath");
@@ -412,12 +416,21 @@ namespace pub
 			ov::String segment_rule = record_node.child_value("SegmentRule");
 			ov::String metadata = record_node.child_value("Metadata");
 
-			if(enable == false)
+		
+			// Get the source stream name. If no linked input stream, use the current output stream name.
+			ov::String source_stream_name = stream_info->GetName();
+			if (stream_info->GetLinkedInputStream() != nullptr)
 			{
-				continue;
+				source_stream_name = stream_info->GetLinkedInputStream()->GetName();
+			}
+			else
+			{
+				source_stream_name = stream_info->GetName();
 			}
 
 			// stream_name can be regex
+			target_stream_name = target_stream_name.Replace("${SourceStream}", source_stream_name.CStr());
+
 			ov::Regex _target_stream_name_regex = ov::Regex::CompiledRegex(ov::Regex::WildCardRegex(target_stream_name));
 			auto match_result = _target_stream_name_regex.Matches(stream_info->GetName().CStr());
 
@@ -434,6 +447,9 @@ namespace pub
 
 			record->SetId(ov::Random::GenerateString(16));
 			record->SetEnable(enable);
+			// Recording tasks created by the configuration are one-time tasks 
+			// and will be automatically deleted when the stream ends.
+			record->SetByConfig(true);
 			record->SetVhost(GetVHostAppName().GetVHostName());
 			record->SetApplication(GetVHostAppName().GetAppName());
 

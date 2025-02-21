@@ -12,12 +12,11 @@
 #include <base/ovlibrary/ovlibrary.h>
 #include <stdint.h>
 
+#include "base/mediarouter/media_type.h"
 extern "C"
 {
 #include <libavformat/avformat.h>
 }
-
-#include "base/mediarouter/media_type.h"
 
 class MediaFrame
 {
@@ -30,6 +29,16 @@ public:
 			av_frame_free(&_priv_data);
 			_priv_data = nullptr;
 		}
+	}
+
+	void SetSourceId(int32_t source_id)
+	{
+		_source_id = source_id;
+	}
+
+	int32_t GetSourceId() const
+	{
+		return _source_id;
 	}
 
 	void SetMediaType(cmn::MediaType media_type)
@@ -136,6 +145,10 @@ public:
 	void SetNbSamples(int32_t nb_samples)
 	{
 		_nb_samples = nb_samples;
+
+		if(_priv_data) {
+			_priv_data->nb_samples = nb_samples;
+		}
 	}
 
 	cmn::AudioChannel &GetChannels()
@@ -173,8 +186,6 @@ public:
 		return _flags;
 	}
 
-	// 데이터를 빈값으로 채움
-	// FillZero
 	void FillZeroData()
 	{
 		if(!_priv_data) {
@@ -211,6 +222,7 @@ public:
 		}
 
 		frame->SetMediaType(_media_type);
+		frame->SetSourceId(_source_id);
 
 		if (_media_type == cmn::MediaType::Video)
 		{
@@ -249,9 +261,13 @@ public:
 		ov::String info;
 
 		info.AppendFormat("TrackID(%d) ", GetTrackId());
+		info.AppendFormat("SourceId(%u) ", _source_id);
 		info.AppendFormat("Type(%s) ", cmn::GetMediaTypeString(GetMediaType()).CStr());
 		info.AppendFormat("PTS(%" PRId64 ") ", GetPts());
 		info.AppendFormat("Duration(%" PRId64 ") ", GetDuration());
+		if(_priv_data != nullptr) {
+			info.AppendFormat("NbSamples(%d) ", GetNbSamples());
+		}
 
 		return info;
 	}
@@ -275,4 +291,8 @@ private:
 	int32_t _sample_rate = 0;
 
 	int32_t _flags = 0;	 // Key, non-Key
+
+	// This shows the ID of the module that made the media frame. It can be a decoder or a filter. 
+	// The encoder uses this value to check if the filter has changed.
+	int32_t _source_id = 0;
 };

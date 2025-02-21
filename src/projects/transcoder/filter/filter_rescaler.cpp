@@ -101,171 +101,181 @@ bool FilterRescaler::InitializeFilterDescription()
 {
 	std::vector<ov::String> filters;
 
-	// 2. Timebase
-	filters.push_back(ov::String::FormatString("settb=%s", _output_track->GetTimeBase().GetStringExpr().CStr()));
-
-	// 3. Scaler
-	auto input_module_id = _input_track->GetCodecModuleId();
-	auto input_device_id = _input_track->GetCodecDeviceId();
-	auto output_module_id = _output_track->GetCodecModuleId();
-	auto output_device_id = _output_track->GetCodecDeviceId();
-	
-	// Scaler is performed on the same device as the encoder(output module)
-	ov::String desc = "";
-
-	if (output_module_id == cmn::MediaCodecModuleId::DEFAULT ||
-		output_module_id == cmn::MediaCodecModuleId::BEAMR ||
-		output_module_id == cmn::MediaCodecModuleId::QSV ||
-		output_module_id == cmn::MediaCodecModuleId::LIBVPX ||
-		// Until now, Logan VPU processes in CPU memory like SW-based modules. Performance needs to be improved in the future
-		output_module_id == cmn::MediaCodecModuleId::NILOGAN  
-		/* || output_module_id == cmn::MediaCodecModuleId::libx26x */)
+	if (IsSingleTrack())
 	{
-		switch (input_module_id)
-		{
-			case cmn::MediaCodecModuleId::NVENC:  
-			{
-				// Use the av_hwframe_transfer_data function to enable copying from GPU memory to CPU memory.
-				_use_hwframe_transfer = true;
-
-				// Change the pixel format of the source filter to the SW pixel format supported by the hardware.
-				auto hw_device_ctx = TranscodeGPU::GetInstance()->GetDeviceContext(input_module_id, input_device_id);
-				if (hw_device_ctx == nullptr)
-				{
-					logte("Could not get hw device context for %s(%d)", cmn::GetStringFromCodecModuleId(input_module_id).CStr(), input_device_id);
-					return false;
-				}
-				auto constraints = av_hwdevice_get_hwframe_constraints(hw_device_ctx, nullptr);
-				_src_pixfmt = *(constraints->valid_sw_formats);
-				desc = ov::String::FormatString("");
-			}
-			break;
-			case cmn::MediaCodecModuleId::XMA: 
-			{
-				// Copy the frames in Xilinx Device memory to the CPU memory using the xvbm_convert filter.
-				desc = ov::String::FormatString("xvbm_convert,");
-			}
-			break;
-			default: 
-				logtw("Unsupported input module: %s", cmn::GetStringFromCodecModuleId(input_module_id).CStr());
-			case cmn::MediaCodecModuleId::QSV:  	// CPU memory using 'gpu_copy=on'
-			case cmn::MediaCodecModuleId::NILOGAN: 	// CPU memory using 'out=sw'
-			case cmn::MediaCodecModuleId::DEFAULT:  // CPU memory 
-			{
-				desc = ov::String::FormatString("");
-			}
-		}
-		// Scaler description of defulat module
-		desc += ov::String::FormatString("scale=%dx%d:flags=bilinear", _output_track->GetWidth(), _output_track->GetHeight());
-	}
-	else if (output_module_id == cmn::MediaCodecModuleId::NVENC)
-	{
-		switch (input_module_id)
-		{
-			case cmn::MediaCodecModuleId::NVENC: { 	// Zero Copy
-				//TODO: Exception handling required if Device ID is different. Find out if memory copy between GPUs is possible
-				desc = ov::String::FormatString("");
-			}
-			break;
-			case cmn::MediaCodecModuleId::XMA: {
-				desc = ov::String::FormatString("xvbm_convert,hwupload_cuda=device=%d,",output_device_id);
-			}
-			break;
-			default: 
-				logtw("Unsupported input module: %s", cmn::GetStringFromCodecModuleId(input_module_id).CStr());
-			case cmn::MediaCodecModuleId::QSV: 		// CPU memory using 'gpu_copy=on'
-			case cmn::MediaCodecModuleId::NILOGAN: 	// CPU memory using 'out=sw'
-			case cmn::MediaCodecModuleId::DEFAULT: 	// CPU memory 
-			{
-				desc = ov::String::FormatString("hwupload_cuda=device=%d,", output_device_id);
-			}
-		}
-		desc += ov::String::FormatString("scale_npp=%d:%d", _output_track->GetWidth(), _output_track->GetHeight());
-	}
-	else if (output_module_id == cmn::MediaCodecModuleId::XMA)
-	{
-		// multiscale_xma only supports resolutions multiple of 4.
-		bool need_crop_for_multiple_of_4 = (_input_track->GetHeight() % 4 != 0 || _input_track->GetHeight() % 4 != 0);;
-		if(need_crop_for_multiple_of_4)
-		{
-			logtw("multiscale_xma only supports resolutions multiple of 4. The resolution will be cropped to a multiple of 4.");
-		}
-
-		int32_t desire_width = _input_track->GetWidth() - _input_track->GetWidth() % 4;
-		int32_t desire_height = _input_track->GetHeight() - _input_track->GetHeight() % 4;
-
-		switch (input_module_id)
-		{
-			case cmn::MediaCodecModuleId::XMA: {  // Zero Copy
-				if (input_device_id != output_device_id)
-				{
-					desc = ov::String::FormatString("xvbm_convert,");
-					if (need_crop_for_multiple_of_4)
-					{
-						desc += ov::String::FormatString("crop=%d:%d:0:0,",  desire_width, desire_height);
-					}
-				}
-				else
-				{
-					desc = ov::String::FormatString("");
-					if (need_crop_for_multiple_of_4)
-					{
-						desc += ov::String::FormatString("xvbm_convert,crop=%d:%d:0:0,",  desire_width, desire_height);
-					}					
-				}
-			}
-			break;
-			case cmn::MediaCodecModuleId::NVENC: {
-				// Use the av_hwframe_transfer_data function to enable copying from GPU memory to CPU memory.
-				_use_hwframe_transfer = true;
-
-				// Change the pixel format of the source filter to the SW pixel format supported by the hardware.
-				auto hw_device_ctx = TranscodeGPU::GetInstance()->GetDeviceContext(input_module_id, input_device_id);
-				if (hw_device_ctx == nullptr)
-				{
-					logte("Could not get hw device context for %s(%d)", cmn::GetStringFromCodecModuleId(input_module_id).CStr(), input_device_id);
-					return false;
-				}
-				auto constraints = av_hwdevice_get_hwframe_constraints(hw_device_ctx, nullptr);
-				_src_pixfmt = *(constraints->valid_sw_formats);
-				// desc = ov::String::FormatString("xvbm_convert,");
-				desc = ov::String::FormatString("");
-				if (need_crop_for_multiple_of_4)
-				{
-					desc += ov::String::FormatString("crop=%d:%d:0:0,", desire_width, desire_height);
-				}
-			}
-			break;
-			default:
-				logtw("Unsupported input module: %s", cmn::GetStringFromCodecModuleId(input_module_id).CStr());
-			case cmn::MediaCodecModuleId::QSV:		// CPU memory using 'gpu_copy=on'
-			case cmn::MediaCodecModuleId::NILOGAN:	// CPU memory using 'out=sw'
-			case cmn::MediaCodecModuleId::DEFAULT:	// CPU memory
-			{
-				// xvbm_convert is xvbm frame to av frame converter filter
-				// desc = ov::String::FormatString("xvbm_convert,");
-				desc = ov::String::FormatString("");
-				if (need_crop_for_multiple_of_4)
-				{
-					desc += ov::String::FormatString("crop=%d:%d:0:0,", desire_width, desire_height);
-				}
-			}
-		}
-
-		desc += ov::String::FormatString("multiscale_xma=lxlnx_hwdev=%d:outputs=1:out_1_width=%d:out_1_height=%d:out_1_rate=full",
-			_output_track->GetCodecDeviceId(), _output_track->GetWidth(), _output_track->GetHeight());
+		// No need to rescale if the input and output are the same.
 	}
 	else
 	{
-		logtw("Unsupported output module id: %d", output_module_id);
-		return false;
+		// 2. Timebase
+		filters.push_back(ov::String::FormatString("settb=%s", _output_track->GetTimeBase().GetStringExpr().CStr()));
+
+		// 3. Scaler
+		auto input_module_id = _input_track->GetCodecModuleId();
+		auto input_device_id = _input_track->GetCodecDeviceId();
+		auto output_module_id = _output_track->GetCodecModuleId();
+		auto output_device_id = _output_track->GetCodecDeviceId();
+
+		// Scaler is performed on the same device as the encoder(output module)
+		ov::String desc = "";
+
+		if (output_module_id == cmn::MediaCodecModuleId::DEFAULT ||
+			output_module_id == cmn::MediaCodecModuleId::BEAMR ||
+			output_module_id == cmn::MediaCodecModuleId::OPENH264 ||
+			output_module_id == cmn::MediaCodecModuleId::X264 ||
+			output_module_id == cmn::MediaCodecModuleId::QSV ||
+			output_module_id == cmn::MediaCodecModuleId::LIBVPX ||
+			// Until now, Logan VPU processes in CPU memory like SW-based modules. Performance needs to be improved in the future
+			output_module_id == cmn::MediaCodecModuleId::NILOGAN
+			/* || output_module_id == cmn::MediaCodecModuleId::libx26x */)
+		{
+			switch (input_module_id)
+			{
+				case cmn::MediaCodecModuleId::NVENC: {
+					// Use the av_hwframe_transfer_data function to enable copying from GPU memory to CPU memory.
+					_use_hwframe_transfer = true;
+
+					// Change the pixel format of the source filter to the SW pixel format supported by the hardware.
+					auto hw_device_ctx = TranscodeGPU::GetInstance()->GetDeviceContext(input_module_id, input_device_id);
+					if (hw_device_ctx == nullptr)
+					{
+						logte("Could not get hw device context for %s(%d)", cmn::GetStringFromCodecModuleId(input_module_id).CStr(), input_device_id);
+						return false;
+					}
+					auto constraints = av_hwdevice_get_hwframe_constraints(hw_device_ctx, nullptr);
+					_src_pixfmt = *(constraints->valid_sw_formats);
+					desc = ov::String::FormatString("");
+				}
+				break;
+				case cmn::MediaCodecModuleId::XMA: {
+					// Copy the frames in Xilinx Device memory to the CPU memory using the xvbm_convert filter.
+					desc = ov::String::FormatString("xvbm_convert,");
+				}
+				break;
+				default:
+					logtw("Unsupported input module: %s", cmn::GetStringFromCodecModuleId(input_module_id).CStr());
+				case cmn::MediaCodecModuleId::X264:
+				case cmn::MediaCodecModuleId::QSV:		// CPU memory using 'gpu_copy=on'
+				case cmn::MediaCodecModuleId::NILOGAN:	// CPU memory using 'out=sw'
+				case cmn::MediaCodecModuleId::DEFAULT:	// CPU memory
+				{
+					desc = ov::String::FormatString("");
+				}
+			}
+			// Scaler description of defulat module
+			desc += ov::String::FormatString("scale=%dx%d:flags=bilinear", _output_track->GetWidth(), _output_track->GetHeight());
+		}
+		else if (output_module_id == cmn::MediaCodecModuleId::NVENC)
+		{
+			switch (input_module_id)
+			{
+				case cmn::MediaCodecModuleId::NVENC: {	// Zero Copy
+					//TODO: Exception handling required if Device ID is different. Find out if memory copy between GPUs is possible
+					desc = ov::String::FormatString("");
+				}
+				break;
+				case cmn::MediaCodecModuleId::XMA: {
+					desc = ov::String::FormatString("xvbm_convert,hwupload_cuda=device=%d,", output_device_id);
+				}
+				break;
+				default:
+					logtw("Unsupported input module: %s", cmn::GetStringFromCodecModuleId(input_module_id).CStr());
+				case cmn::MediaCodecModuleId::X264:
+				case cmn::MediaCodecModuleId::QSV:		// CPU memory using 'gpu_copy=on'
+				case cmn::MediaCodecModuleId::NILOGAN:	// CPU memory using 'out=sw'
+				case cmn::MediaCodecModuleId::DEFAULT:	// CPU memory
+				{
+					desc = ov::String::FormatString("hwupload_cuda=device=%d,", output_device_id);
+				}
+			}
+			desc += ov::String::FormatString("scale_cuda=%d:%d", _output_track->GetWidth(), _output_track->GetHeight());
+		}
+		else if (output_module_id == cmn::MediaCodecModuleId::XMA)
+		{
+			// multiscale_xma only supports resolutions multiple of 4.
+			bool need_crop_for_multiple_of_4 = (_input_track->GetHeight() % 4 != 0 || _input_track->GetHeight() % 4 != 0);
+			if (need_crop_for_multiple_of_4)
+			{
+				logtw("multiscale_xma only supports resolutions multiple of 4. The resolution will be cropped to a multiple of 4.");
+			}
+
+			int32_t desire_width = _input_track->GetWidth() - _input_track->GetWidth() % 4;
+			int32_t desire_height = _input_track->GetHeight() - _input_track->GetHeight() % 4;
+
+			switch (input_module_id)
+			{
+				case cmn::MediaCodecModuleId::XMA: {  // Zero Copy
+					if (input_device_id != output_device_id)
+					{
+						desc = ov::String::FormatString("xvbm_convert,");
+						if (need_crop_for_multiple_of_4)
+						{
+							desc += ov::String::FormatString("crop=%d:%d:0:0,", desire_width, desire_height);
+						}
+					}
+					else
+					{
+						desc = ov::String::FormatString("");
+						if (need_crop_for_multiple_of_4)
+						{
+							desc += ov::String::FormatString("xvbm_convert,crop=%d:%d:0:0,", desire_width, desire_height);
+						}
+					}
+				}
+				break;
+				case cmn::MediaCodecModuleId::NVENC: {
+					// Use the av_hwframe_transfer_data function to enable copying from GPU memory to CPU memory.
+					_use_hwframe_transfer = true;
+
+					// Change the pixel format of the source filter to the SW pixel format supported by the hardware.
+					auto hw_device_ctx = TranscodeGPU::GetInstance()->GetDeviceContext(input_module_id, input_device_id);
+					if (hw_device_ctx == nullptr)
+					{
+						logte("Could not get hw device context for %s(%d)", cmn::GetStringFromCodecModuleId(input_module_id).CStr(), input_device_id);
+						return false;
+					}
+					auto constraints = av_hwdevice_get_hwframe_constraints(hw_device_ctx, nullptr);
+					_src_pixfmt = *(constraints->valid_sw_formats);
+					// desc = ov::String::FormatString("xvbm_convert,");
+					desc = ov::String::FormatString("");
+					if (need_crop_for_multiple_of_4)
+					{
+						desc += ov::String::FormatString("crop=%d:%d:0:0,", desire_width, desire_height);
+					}
+				}
+				break;
+				default:
+					logtw("Unsupported input module: %s", cmn::GetStringFromCodecModuleId(input_module_id).CStr());
+				case cmn::MediaCodecModuleId::X264:		// CPU memory
+				case cmn::MediaCodecModuleId::QSV:		// CPU memory using 'gpu_copy=on'
+				case cmn::MediaCodecModuleId::NILOGAN:	// CPU memory using 'out=sw'
+				case cmn::MediaCodecModuleId::DEFAULT:	// CPU memory
+				{
+					// xvbm_convert is xvbm frame to av frame converter filter
+					// desc = ov::String::FormatString("xvbm_convert,");
+					desc = ov::String::FormatString("");
+					if (need_crop_for_multiple_of_4)
+					{
+						desc += ov::String::FormatString("crop=%d:%d:0:0,", desire_width, desire_height);
+					}
+				}
+			}
+
+			desc += ov::String::FormatString("multiscale_xma=lxlnx_hwdev=%d:outputs=1:out_1_width=%d:out_1_height=%d:out_1_rate=full",
+											 _output_track->GetCodecDeviceId(), _output_track->GetWidth(), _output_track->GetHeight());
+		}
+		else
+		{
+			logtw("Unsupported output module id: %d", output_module_id);
+			return false;
+		}
+
+		filters.push_back(desc);
+
+		// 4. Pixel Format
+		filters.push_back(ov::String::FormatString("format=%s", ::av_get_pix_fmt_name((AVPixelFormat)_output_track->GetColorspace())));
 	}
-
-	filters.push_back(desc);
-
-	// 4. Pixel Format
-	filters.push_back(ov::String::FormatString("format=%s", ::av_get_pix_fmt_name((AVPixelFormat)_output_track->GetColorspace())));
-
+	
 	if(filters.size() == 0)
 	{
 		filters.push_back("null");
@@ -289,11 +299,11 @@ bool FilterRescaler::Configure(const std::shared_ptr<MediaTrack> &input_track, c
 	// Initialize Constant Framerate & Skip Frames Filter
 	_fps_filter.SetInputTimebase(_input_track->GetTimeBase());
 	_fps_filter.SetInputFrameRate(_input_track->GetFrameRate());
+	
 	// If the user is not the set output Framerate, use the measured Framerate
 	_fps_filter.SetOutputFrameRate(_output_track->GetFrameRateByConfig() > 0 ? _output_track->GetFrameRateByConfig() : _output_track->GetEstimateFrameRate());
 	_fps_filter.SetSkipFrames(_output_track->GetSkipFramesByConfig() >= 0 ? _output_track->GetSkipFramesByConfig() : 0);
-	logtd("Created FPS filter. %s", _fps_filter.GetInfoString().CStr());
-
+	
 	// Set the threshold of the input buffer to 2 seconds.
 	_input_buffer.SetThreshold(_input_track->GetFrameRate() * 2);
 
@@ -319,7 +329,7 @@ bool FilterRescaler::Configure(const std::shared_ptr<MediaTrack> &input_track, c
 		return false;
 	}
 
-	logti("Rescaler parameters. track(#%u -> #%u), module(%s:%d -> %s:%d). desc(src:%s -> output:%s)",
+	logti("Rescaler parameters. track(#%u -> #%u), module(%s:%d -> %s:%d). desc(src:%s -> output:%s), fps(%.2f -> %.2f), skipFrames(%d)",
 		  _input_track->GetId(),
 		  _output_track->GetId(),
 		  GetStringFromCodecModuleId(_input_track->GetCodecModuleId()).CStr(),
@@ -327,7 +337,10 @@ bool FilterRescaler::Configure(const std::shared_ptr<MediaTrack> &input_track, c
 		  GetStringFromCodecModuleId(_output_track->GetCodecModuleId()).CStr(),
 		  _output_track->GetCodecDeviceId(),
 		  _src_args.CStr(),
-		  _filter_desc.CStr());
+		  _filter_desc.CStr(),
+		  _fps_filter.GetInputFrameRate(), 
+		  _fps_filter.GetOutputFrameRate(), 
+		  _fps_filter.GetSkipFrames());
 
 	if ((::avfilter_graph_parse_ptr(_filter_graph, _filter_desc, &_inputs, &_outputs, nullptr)) < 0)
 	{
@@ -358,13 +371,21 @@ bool FilterRescaler::Configure(const std::shared_ptr<MediaTrack> &input_track, c
 
 bool FilterRescaler::Start()
 {
-	// Generates a thread that reads and encodes frames in the input_buffer queue and places them in the output queue.
+	_source_id = ov::Random::GenerateInt32();
+
 	try
 	{
 		_kill_flag = false;
 
 		_thread_work = std::thread(&FilterRescaler::WorkerThread, this);
-		pthread_setname_np(_thread_work.native_handle(), "Rescaler");
+		pthread_setname_np(_thread_work.native_handle(), ov::String::FormatString("FLT-rscl-t%u", _output_track->GetId()).CStr());
+		
+		if (_codec_init_event.Get() == false)
+		{
+			_kill_flag = false;
+
+			return false;
+		}	
 	}
 	catch (const std::system_error &e)
 	{
@@ -391,11 +412,14 @@ void FilterRescaler::Stop()
 	if (_thread_work.joinable())
 	{
 		_thread_work.join();
+		
 	}
 
-	OV_SAFE_FUNC(_frame, nullptr, ::av_frame_free, &);
+	OV_SAFE_FUNC(_buffersrc_ctx, nullptr, ::avfilter_free, );
+	OV_SAFE_FUNC(_buffersink_ctx, nullptr, ::avfilter_free, );
 	OV_SAFE_FUNC(_inputs, nullptr, ::avfilter_inout_free, &);
 	OV_SAFE_FUNC(_outputs, nullptr, ::avfilter_inout_free, &);
+	OV_SAFE_FUNC(_frame, nullptr, ::av_frame_free, &);
 	OV_SAFE_FUNC(_filter_graph, nullptr, ::avfilter_graph_free, &);
 
 	_buffersrc= nullptr;
@@ -403,11 +427,21 @@ void FilterRescaler::Stop()
 	
 	_input_buffer.Clear();
 
+	_fps_filter.Clear();
+
 	SetState(State::STOPPED);
+
+	logtd("rescale filter has ended");
 }
 
 bool FilterRescaler::PushProcess(std::shared_ptr<MediaFrame> media_frame)
 {
+	// Flush the buffer source filter
+	if (media_frame == nullptr)
+	{
+		return false;
+	}
+
 	auto av_frame = ffmpeg::Conv::ToAVFrame(cmn::MediaType::Video, media_frame);
 	if (!av_frame)
 	{
@@ -456,9 +490,9 @@ bool FilterRescaler::PushProcess(std::shared_ptr<MediaFrame> media_frame)
 	return true;
 }
 
-bool FilterRescaler::PopProcess()
+bool FilterRescaler::PopProcess(bool is_flush)
 {
-	while (!_kill_flag)
+	while (!_kill_flag || is_flush)
 	{
 		// Receive from filtergraph
 		int ret = ::av_buffersink_get_frame(_buffersink_ctx, _frame);
@@ -468,16 +502,24 @@ bool FilterRescaler::PopProcess()
 		}
 		else if (ret == AVERROR_EOF)
 		{
+			if(is_flush)
+			{
+				break;
+			}
+			
 			logte("Error receiving filtered frame. error(EOF)");
-
 			SetState(State::ERROR);
 
 			return false;
 		}
 		else if (ret < 0)
 		{
-			logte("Error receiving filtered frame. error(%d)", ret);
+			if(is_flush)
+			{
+				break;
+			}
 
+			logte("Error receiving filtered frame. error(%d)", ret);
 			SetState(State::ERROR);
 
 			return false;
@@ -494,6 +536,7 @@ bool FilterRescaler::PopProcess()
 
 			// Convert duration to output track timebase
 			output_frame->SetDuration((int64_t)((double)output_frame->GetDuration() * _input_track->GetTimeBase().GetExpr() / _output_track->GetTimeBase().GetExpr()));
+			output_frame->SetSourceId(_source_id);
 
 			Complete(std::move(output_frame));
 		}
@@ -506,8 +549,16 @@ bool FilterRescaler::PopProcess()
 		if (!PushProcess(frame)) { break; } \
 		if (!PopProcess()) { break; } 
 
+#define FLUSH_FILTER_ONCE() \
+		{ PushProcess(nullptr); PopProcess(true); }
+
 void FilterRescaler::WorkerThread()
 {
+	if(_codec_init_event.Submit(Configure(_input_track, _output_track)) == false)
+	{
+		return;
+	}
+
 	SetState(State::STARTED);
 
 #if _SKIP_FRAMES_ENABLED
@@ -646,7 +697,9 @@ void FilterRescaler::WorkerThread()
 #endif
 
 	}
-	
+
+	// Flush the filter
+	FLUSH_FILTER_ONCE();
 }
 
 bool FilterRescaler::SetHWContextToFilterIfNeed()

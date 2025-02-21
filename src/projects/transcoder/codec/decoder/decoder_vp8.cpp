@@ -11,47 +11,6 @@
 #include "../../transcoder_private.h"
 #include "base/info/application.h"
 
-bool DecoderVP8::Configure(std::shared_ptr<MediaTrack> context)
-{
-	if (TranscodeDecoder::Configure(context) == false)
-	{
-		return false;
-	}
-
-	// Create packet parser
-	_parser = ::av_parser_init(GetCodecID());
-	if (_parser == nullptr)
-	{
-		logte("Parser not found");
-		return false;
-	}
-
-	_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
-
-	// Initialize codec
-	if (InitCodec() == false)
-	{
-		return false;
-	}
-
-	// Generates a thread that reads and encodes frames in the input_buffer queue and places them in the output queue.
-	try
-	{
-		_kill_flag = false;
-
-		_codec_thread = std::thread(&TranscodeDecoder::CodecThread, this);
-		pthread_setname_np(_codec_thread.native_handle(), ov::String::FormatString("Dec%s", avcodec_get_name(GetCodecID())).CStr());
-	}
-	catch (const std::system_error &e)
-	{
-		logte("Failed to start decoder thread");
-		_kill_flag = true;
-		return false;
-	}
-
-	return true;
-}
-
 bool DecoderVP8::InitCodec()
 {
 	const AVCodec *_codec = ::avcodec_find_decoder(GetCodecID());
@@ -69,12 +28,22 @@ bool DecoderVP8::InitCodec()
 	}
 
 	_context->time_base = ffmpeg::Conv::TimebaseToAVRational(GetTimebase());
-
+	_context->thread_count = GetRefTrack()->GetThreadCount();
+	_context->thread_type = FF_THREAD_FRAME;
+	
 	if (::avcodec_open2(_context, _codec, nullptr) < 0)
 	{
 		logte("Could not open codec: %s (%d)", ::avcodec_get_name(GetCodecID()), GetCodecID());
 		return false;
 	}
+
+	_parser = ::av_parser_init(GetCodecID());
+	if (_parser == nullptr)
+	{
+		logte("Parser not found");
+		return false;
+	}
+	_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
 
 	_change_format = false;
 
@@ -83,10 +52,17 @@ bool DecoderVP8::InitCodec()
 
 void DecoderVP8::UninitCodec()
 {
-	::avcodec_close(_context);
-	::avcodec_free_context(&_context);
-
+	if (_context != nullptr)
+	{
+		::avcodec_free_context(&_context);
+	}
 	_context = nullptr;
+
+	if (_parser != nullptr)
+	{
+		::av_parser_close(_parser);
+	}
+	_parser = nullptr;
 }
 
 bool DecoderVP8::ReinitCodecIfNeed()
@@ -108,6 +84,12 @@ bool DecoderVP8::ReinitCodecIfNeed()
 
 void DecoderVP8::CodecThread()
 {
+	// Initialize the codec and notify the main thread.
+	if(_codec_init_event.Submit(InitCodec()) == false)
+	{
+		return;
+	}
+	
 	while (!_kill_flag)
 	{
 		auto obj = _input_buffer.Dequeue();
@@ -144,7 +126,7 @@ void DecoderVP8::CodecThread()
 				break;
 			}
 
-			if(ReinitCodecIfNeed() == false)
+			if (ReinitCodecIfNeed() == false)
 			{
 				break;
 			}
@@ -162,8 +144,18 @@ void DecoderVP8::CodecThread()
 					_pkt->duration = duration;
 				}
 
-				int ret = ::avcodec_send_packet(_context, _pkt);
+				// Keyframe Decode Only
+				// If set to decode only key frames, non-keyframe packets are dropped.
+				if(GetRefTrack()->IsKeyframeDecodeOnly() == true)
+				{
+					// Drop non-keyframe packets
+					if (!(_pkt->flags & AV_PKT_FLAG_KEY))
+					{
+						break;
+					}
+				}
 
+				int ret = ::avcodec_send_packet(_context, _pkt);
 				if (ret == AVERROR(EAGAIN))
 				{
 					// Need more data

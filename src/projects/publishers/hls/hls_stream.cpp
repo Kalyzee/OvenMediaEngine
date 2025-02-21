@@ -66,6 +66,28 @@ HlsStream::~HlsStream()
 	logtd("TsStream(%s/%s) has been terminated finally", GetApplicationName(), GetName().CStr());
 }
 
+std::shared_ptr<const pub::Stream::DefaultPlaylistInfo> HlsStream::GetDefaultPlaylistInfo() const
+{
+	// Since the same value is always stored in info, it is not an issue
+	// even if multiple instances of info are created due to a race conditio in multi-threading
+	static auto info = []() -> std::shared_ptr<const pub::Stream::DefaultPlaylistInfo> {
+		ov::String file_name = "playlist.m3u8";
+		auto file_name_without_ext = file_name.Substring(0, file_name.IndexOfRev('.'));
+
+		return std::make_shared<const pub::Stream::DefaultPlaylistInfo>(
+			"hls_default",
+			file_name_without_ext,
+			file_name);
+	}();
+
+	return info;
+}
+
+ov::String HlsStream::GetStreamId() const
+{
+	return ov::String::FormatString("hlsv3/%s", GetUri().CStr());
+}
+
 bool HlsStream::Start()
 {
 	if (GetState() != State::CREATED)
@@ -145,6 +167,7 @@ bool HlsStream::IsSupportedCodec(cmn::MediaCodecId codec_id) const
 {
 	switch (codec_id)
 	{
+		case cmn::MediaCodecId::H265:
 		case cmn::MediaCodecId::H264:
 		case cmn::MediaCodecId::Aac:
 			return true;
@@ -191,12 +214,13 @@ bool HlsStream::CreateDefaultPlaylist()
 	}
 
 	// Create default playlist
-	ov::String default_playlist_name = TS_HLS_DEFAULT_PLAYLIST_NAME;
-	auto default_playlist_name_without_ext = default_playlist_name.Substring(0, default_playlist_name.IndexOfRev('.'));
-	auto default_playlist = Stream::GetPlaylist(default_playlist_name_without_ext);
+	auto default_playlist_info = GetDefaultPlaylistInfo();
+	OV_ASSERT2(default_playlist_info != nullptr);
+
+	auto default_playlist = Stream::GetPlaylist(default_playlist_info->file_name);
 	if (default_playlist == nullptr)
 	{
-		auto playlist = std::make_shared<info::Playlist>("hls_default", default_playlist_name_without_ext);
+		auto playlist = std::make_shared<info::Playlist>(default_playlist_info->name, default_playlist_info->file_name, true);
 		auto rendition = std::make_shared<info::Rendition>("default", first_video_track ? first_video_track->GetVariantName() : "", first_audio_track ? first_audio_track->GetVariantName() : "");
 
 		playlist->AddRendition(rendition);
@@ -312,8 +336,46 @@ void HlsStream::SendDataFrame(const std::shared_ptr<MediaPacket> &media_packet)
 		SendBufferedPackets();
 	}
 
-	// Not implemented
-	// TODO(getroot) : Implement this function
+	auto data_track = GetTrack(media_packet->GetTrackId());
+	if (data_track == nullptr)
+	{
+		logtw("Could not find track. id: %d", media_packet->GetTrackId());
+		return;
+	}
+
+	if (media_packet->GetBitstreamFormat() == cmn::BitstreamFormat::CUE)
+	{
+		Marker marker;
+
+		// Rescale to the timescale of MPEG-TS (90kHz)
+		marker.timestamp = static_cast<double>(media_packet->GetDts()) / data_track->GetTimeBase().GetTimescale() * mpegts::TIMEBASE_DBL;
+		marker.data = media_packet->GetData()->Clone();
+
+		// Parse the cue data
+		auto cue_event = CueEvent::Parse(marker.data);
+		if (cue_event == nullptr)
+		{
+			logte("(%s/%s) Failed to parse the cue event data", GetApplication()->GetVHostAppName().CStr(), GetName().CStr());
+			return;
+		}
+
+		marker.tag = ov::String::FormatString("CueEvent-%s", cue_event->GetCueTypeName().CStr());
+
+		// Insert marker to all packagers
+		for (auto &it : _packagers)
+		{
+			auto packager = it.second;
+			auto result = packager->InsertMarker(marker);
+			if (result == false)
+			{
+				logte("Failed to insert marker (timestamp: %lld, tag: %s)", marker.timestamp, marker.tag.CStr());
+			}
+		}
+
+		return;
+	}
+
+	AppendMediaPacket(media_packet);
 }
 
 void HlsStream::OnEvent(const std::shared_ptr<MediaEvent> &event) 
@@ -387,6 +449,17 @@ void HlsStream::OnSegmentCreated(const ov::String &packager_id, const std::share
 
 	segment->SetUrl(GetSegmentName(packager_id, segment->GetNumber()));
 
+	if (playlist->GetWallclockOffset() == INT64_MIN)
+	{
+		auto first_segment_timestamp_ms = (segment->GetFirstTimestamp() / mpegts::TIMEBASE_DBL) * 1000.0;
+
+		auto wallclock_offset_ms = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(GetInputStreamPublishedTime().time_since_epoch()).count() - first_segment_timestamp_ms);
+
+		OV_ASSERT(wallclock_offset_ms != INT64_MIN, "Failed to calculate wallclock offset");
+
+		playlist->SetWallclockOffset(wallclock_offset_ms);
+	}
+
 	playlist->OnSegmentCreated(segment);
 
 	logtd("Playlist : %s", playlist->ToString(false).CStr());
@@ -438,6 +511,8 @@ bool HlsStream::CreatePackagers()
 
 			auto video_variant_name = rendition->GetVideoVariantName();
 			auto audio_variant_name = rendition->GetAudioVariantName();
+			auto video_index_hint = rendition->GetVideoIndexHint();
+			auto audio_index_hint = rendition->GetAudioIndexHint();
 
 			if (video_variant_name.IsEmpty() == false && GetMediaTrackGroup(video_variant_name) == nullptr)
 			{
@@ -458,8 +533,15 @@ bool HlsStream::CreatePackagers()
 				continue;
 			}
 
-			auto variant_name = GetVariantName(video_variant_name, audio_variant_name);
+			// Check if the rendition has supported codec
+			if ((GetFirstTrackByVariant(video_variant_name) != nullptr && IsSupportedCodec(GetFirstTrackByVariant(video_variant_name)->GetCodecId()) == false) || 
+				(GetFirstTrackByVariant(audio_variant_name) != nullptr && IsSupportedCodec(GetFirstTrackByVariant(audio_variant_name)->GetCodecId()) == false))
+			{
+				logtw("HLS Stream(%s/%s) - Exclude the rendition(%s) from the %s playlist due to unsupported codec", GetApplication()->GetVHostAppName().CStr(), GetName().CStr(), rendition->GetName().CStr(), playlist->GetFileName().CStr());
+				continue;
+			}
 
+			auto variant_name = GetVariantName(video_variant_name, video_index_hint, audio_variant_name, audio_index_hint);
 			auto media_playlist = GetMediaPlaylist(variant_name);
 			if (media_playlist != nullptr)
 			{
@@ -545,44 +627,98 @@ bool HlsStream::CreatePackagers()
 			if (video_variant_name.IsEmpty() == false)
 			{
 				auto video_track_group = GetMediaTrackGroup(video_variant_name);
-				for (auto &track : video_track_group->GetTracks())
+
+				if (video_index_hint != -1)
 				{
-					packetizer->AddTrack(track);
-
-					// Add to track packetizers
+					auto track = video_track_group->GetTrack(video_index_hint);
+					if (track == nullptr)
 					{
-						std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
-						_track_packetizers[track->GetId()].emplace_back(packetizer);
+						logtw("HLS Stream(%s/%s) - The video track index %d in the rendition %s is not found in the track list, it will be ignored", GetApplication()->GetVHostAppName().CStr(), GetName().CStr(), video_index_hint, playlist->GetFileName().CStr());
 					}
+					else
+					{
+						packetizer->AddTrack(track);
 
-					media_playlist->AddMediaTrackInfo(track);
+						// Add to track packetizers
+						{
+							std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
+							_track_packetizers[track->GetId()].emplace_back(packetizer);
+						}
 
-					// EXT-X-MEDIA is supported in EXT-X-VERSION 4 or higher
-					// Now we support EXT-X-VERSION 3
-					// Therefore, we don't support multiple video tracks now
-					break;
+						media_playlist->AddMediaTrackInfo(track);
+					}
+				}
+				else
+				{
+					for (auto track : video_track_group->GetTracks())
+					{
+						packetizer->AddTrack(track);
+
+						// Add to track packetizers
+						{
+							std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
+							_track_packetizers[track->GetId()].emplace_back(packetizer);
+						}
+
+						media_playlist->AddMediaTrackInfo(track);
+
+						// EXT-X-MEDIA is supported in EXT-X-VERSION 4 or higher
+						// Now we support EXT-X-VERSION 3
+						// Therefore, we don't support multiple video tracks now
+						break;
+					}
 				}
 			}
 
 			if (audio_variant_name.IsEmpty() == false)
 			{
 				auto audio_track_group = GetMediaTrackGroup(audio_variant_name);
-				for (auto &track : audio_track_group->GetTracks())
+				if (audio_index_hint != -1)
 				{
-					packetizer->AddTrack(track);
-
-					// Add to track packetizers
+					auto track = audio_track_group->GetTrack(audio_index_hint);
+					if (track == nullptr)
 					{
-						std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
-						_track_packetizers[track->GetId()].emplace_back(packetizer);
+						logtw("HLS Stream(%s/%s) - The audio track index %d in the rendition %s is not found in the track list, it will be ignored", GetApplication()->GetVHostAppName().CStr(), GetName().CStr(), audio_index_hint, playlist->GetFileName().CStr());
 					}
+					else
+					{
+						packetizer->AddTrack(track);
 
-					media_playlist->AddMediaTrackInfo(track);
+						// Add to track packetizers
+						{
+							std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
+							_track_packetizers[track->GetId()].emplace_back(packetizer);
+						}
 
-					// EXT-X-MEDIA is supported in EXT-X-VERSION 4 or higher
-					// Now we support EXT-X-VERSION 3
-					// Therefore, we don't support multiple audio tracks now
-					break;
+						media_playlist->AddMediaTrackInfo(track);
+					}
+				}
+				else
+				{
+					for (auto track : audio_track_group->GetTracks())
+					{
+						packetizer->AddTrack(track);
+
+						// Add to track packetizers
+						{
+							std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
+							_track_packetizers[track->GetId()].emplace_back(packetizer);
+						}
+
+						media_playlist->AddMediaTrackInfo(track);
+					}
+				}
+			}
+
+			auto data_track = GetFirstTrackByType(cmn::MediaType::Data);
+			if (data_track != nullptr)
+			{
+				packetizer->AddTrack(data_track);
+
+				// Add to track packetizers
+				{
+					std::lock_guard<std::shared_mutex> lock(_packetizers_guard);
+					_track_packetizers[data_track->GetId()].emplace_back(packetizer);
 				}
 			}
 
@@ -594,9 +730,9 @@ bool HlsStream::CreatePackagers()
 	return true;
 }
 
-ov::String HlsStream::GetVariantName(const ov::String &video_variant_name, const ov::String &audio_variant_name) const
+ov::String HlsStream::GetVariantName(const ov::String &video_variant_name, int video_index, const ov::String &audio_variant_name, int audio_index) const
 {
-	auto variant_name = ov::String::FormatString("%s_%s", video_variant_name.CStr(), audio_variant_name.CStr());
+	auto variant_name = ov::String::FormatString("%s%d_%s%d", video_variant_name.CStr(), video_index, audio_variant_name.CStr(), audio_index);
 	return ov::Converter::ToString(variant_name.Hash());
 }
 
