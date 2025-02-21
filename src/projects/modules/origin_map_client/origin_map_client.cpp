@@ -204,6 +204,7 @@ bool OriginMapClient::Unregister(const ov::String &app_stream_name)
 
 	std::lock_guard<std::mutex> origin_map_lock(_origin_map_mutex);
 	_origin_map.erase(app_stream_name);
+	_origin_map_candidates.erase(app_stream_name);
 
 	logti("OriginMapStore: <%s> stream is unregistered.", app_stream_name.CStr());
 

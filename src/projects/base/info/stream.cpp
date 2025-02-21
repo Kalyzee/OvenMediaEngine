@@ -453,14 +453,14 @@ namespace info
 
 	ov::String Stream::GetInfoString()
 	{
-		ov::String out_str = ov::String::FormatString("\n[Stream Info]\nid(%u), msid(%u), output(%s), SourceType(%s), RepresentationType(%s), Created Time (%s) UUID(%s)\n",
+		ov::String out_str = ov::String::FormatString("\n[Stream Info]\nid(%u), msid(%u), output(%s), SourceType(%s), RepresentationType(%s), Created Time (%s) UUID(%s)\nIsFromOriginMapStore(%d)\n",
 													  GetId(), GetMsid(), GetName().CStr(), ::StringFromStreamSourceType(_source_type).CStr(), ::StringFromStreamRepresentationType(_representation_type).CStr(),
-													  ov::Converter::ToString(_created_time).CStr(), GetUUID().CStr());
+													  ov::Converter::ToString(_created_time).CStr(), GetUUID().CStr(), IsFromOriginMapStore());
 		if (GetLinkedInputStream() != nullptr)
 		{
-			out_str.AppendFormat("\t>> Origin Stream Info\n\tid(%u), output(%s), SourceType(%s), Created Time (%s)\n",
+			out_str.AppendFormat("\t>> Origin Stream Info\n\tid(%u), output(%s), SourceType(%s), Created Time (%s)IsFromOriginMapStore(%d)\n",
 								 GetLinkedInputStream()->GetId(), GetLinkedInputStream()->GetName().CStr(), ::StringFromStreamSourceType(GetLinkedInputStream()->GetSourceType()).CStr(),
-								 ov::Converter::ToString(GetLinkedInputStream()->GetCreatedTime()).CStr());
+								 ov::Converter::ToString(GetLinkedInputStream()->GetCreatedTime()).CStr(), GetLinkedInputStream()->IsFromOriginMapStore());
 		}
 
 		if (GetOriginStreamUUID().IsEmpty() == false)
