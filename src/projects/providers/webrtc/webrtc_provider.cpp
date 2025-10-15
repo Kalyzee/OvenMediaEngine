@@ -28,6 +28,7 @@ namespace pvd
 	WebRTCProvider::WebRTCProvider(const cfg::Server &server_config, const std::shared_ptr<MediaRouterInterface> &router)
 		: pvd::PushProvider(server_config, router)
 	{
+		_transport_cc_enabled = server_config.GetBind().GetProviders().GetWebrtc().GetTransportCC();
 	}
 
 	WebRTCProvider::~WebRTCProvider()

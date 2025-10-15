@@ -32,6 +32,11 @@ namespace pvd
 		bool Start() override;
 		bool Stop() override;
 
+		const bool TransportCCIsEnabled()
+		{
+			return _transport_cc_enabled;
+		}
+
 		//--------------------------------------------------------------------
 		// Implementation of Provider's pure virtual functions
 		//--------------------------------------------------------------------
@@ -131,5 +136,7 @@ namespace pvd
 		mutable std::shared_mutex _session_key_stream_map_guard;
 		// Key: stream_key / Value: WebRTCStream
 		std::map<ov::String, std::shared_ptr<WebRTCStream>> _session_key_stream_map;
+
+		bool _transport_cc_enabled = true;
 	};
 }  // namespace pvd

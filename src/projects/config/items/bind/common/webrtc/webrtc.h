@@ -25,6 +25,7 @@ namespace cfg
 				ov::String _tcp_relay_bind;
 				IceCandidates _ice_candidates;
 				IceServers _ice_servers;
+				bool _transport_cc = true;
 
 			public:
 				explicit Webrtc(const char *port)
@@ -41,6 +42,7 @@ namespace cfg
 				CFG_DECLARE_CONST_REF_GETTER_OF(GetTcpRelayBind, _tcp_relay_bind);
 				CFG_DECLARE_CONST_REF_GETTER_OF(GetIceCandidates, _ice_candidates)
 				CFG_DECLARE_CONST_REF_GETTER_OF(GetIceServers, _ice_servers)
+				CFG_DECLARE_CONST_REF_GETTER_OF(GetTransportCC, _transport_cc)
 
 			protected:
 				void MakeList() override
@@ -49,6 +51,7 @@ namespace cfg
 					Register<Optional>("TcpRelayBind", &_tcp_relay_bind);
 					Register<Optional>("IceCandidates", &_ice_candidates);
 					Register<Optional>("IceServers", &_ice_servers);
+					Register<Optional>("TransportCC", &_transport_cc);
 				};
 			};
 		}  // namespace pub

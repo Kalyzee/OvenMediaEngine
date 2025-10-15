@@ -9,6 +9,7 @@
 
 #include "webrtc_private.h"
 #include "webrtc_application.h"
+#include "webrtc_provider.h"
 
 #include <modules/rtp_rtcp/rtp_header_extension/rtp_header_extension.h>
 
@@ -30,6 +31,12 @@ namespace pvd
 		_ice_port = ice_port;
 		_rtc_signalling = rtc_signalling;
 		_certificate = certificate;
+	}
+
+
+	std::shared_ptr<pvd::WebRTCProvider> WebRTCApplication::GetWebRTCProvider()
+	{
+		return std::static_pointer_cast<WebRTCProvider>(GetParentProvider());
 	}
 
 	bool WebRTCApplication::Start()
@@ -62,7 +69,7 @@ namespace pvd
 			return nullptr;
 		}
 
-		bool transport_cc_enabled = true;
+		bool transport_cc_enabled = GetWebRTCProvider()->TransportCCIsEnabled();
 		bool composition_time_enabled = true;
 
 		auto offer_sdp = std::make_shared<SessionDescription>(SessionDescription::SdpType::Offer);

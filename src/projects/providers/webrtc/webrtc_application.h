@@ -19,6 +19,7 @@
 
 namespace pvd
 {
+	class WebRTCProvider;
 	class WebRTCApplication : public pvd::PushApplication
 	{
 	public:
@@ -34,6 +35,8 @@ namespace pvd
 		std::shared_ptr<SessionDescription> CreateAnswerSDP(const std::shared_ptr<const SessionDescription> &offer_sdp, const ov::String &local_ufrag, const std::set<IceCandidate> &ice_candidates);
 		
 	private:
+		std::shared_ptr<WebRTCProvider> GetWebRTCProvider();
+
 		std::shared_ptr<SessionDescription> CreateOfferSDP();
 
 		std::shared_ptr<IcePort> _ice_port = nullptr;
