@@ -4,7 +4,9 @@
 #include "rtp_packet.h"
 #include <unordered_map>
 
-#define DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS	100	 // 500ms
+#define DEFAULT_VIDEO_FIRST_FRAME_MAX_BUFFERING_TIME_MS	1000 
+#define DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS	400	
+#define DEFAULT_MARKER_COMPLETION_DELAY_MS	30
 
 // RTP Packet Group by Frame
 class RtpFrame
@@ -21,16 +23,29 @@ public:
 
 	uint32_t Timestamp(){return _timestamp;}
 	size_t PacketCount(){return _packets.size();}
+	uint32_t MarkerSequenceNumber(){return _marker_sequence_number;}
+
+	uint32_t GetMaxBufferingTime(){return _max_buffering_time_ms;}
+	void SetMaxBufferingTime(uint32_t max_buffering_time_ms)
+	{
+		_max_buffering_time_ms = max_buffering_time_ms;
+	}
 
 private:
 	bool CheckCompleted();
 	uint16_t GetOrderNumber(uint16_t sequence_number);
+
+	uint32_t _marker_completion_delay_ms = DEFAULT_MARKER_COMPLETION_DELAY_MS;
+
 
 	ov::StopWatch _stop_watch;
 
 	uint32_t	_timestamp = 0;
 	
 	uint32_t	_marker_sequence_number = 0;
+	
+	// marked time
+	std::chrono::system_clock::time_point _marked_time;
 	bool		_marked = false;
 	bool		_completed = false;
 
@@ -41,6 +56,9 @@ private:
 	uint16_t 	_curr_order_number = 0;
 	uint16_t 	_min_order_number = 65535;
 	uint16_t 	_max_order_number = 0;
+
+	uint32_t _max_buffering_time_ms = 0;
+
 
 	// Order Number : RtpPacket
 	std::unordered_map<uint16_t, std::shared_ptr<RtpPacket>> _packets;
@@ -54,7 +72,7 @@ public:
 	bool InsertPacket(const std::shared_ptr<RtpPacket> &packet);
 	bool HasAvailableFrame();
 	std::shared_ptr<RtpFrame> PopAvailableFrame();
-	
+
 private:	
 	void BurnOutExpiredFrames();
 
@@ -62,6 +80,9 @@ private:
 
 	uint32_t _last_timestamp = 0;
 	uint32_t _timestamp_cycle = 0;
+	uint64_t _last_extended_timestamp = 0;
+
+	bool _first_frame = true;
 
 	// timestamp : RtpFrameInfo
 	// it should be ordered, so use std::map

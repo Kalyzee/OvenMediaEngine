@@ -37,7 +37,7 @@ std::shared_ptr<RtpPacket> RtpFrame::GetNextRtpPacket()
 		return nullptr;
 	}
 
-	_curr_order_number ++;
+	_curr_order_number++;
 
 	auto it = _packets.find(_curr_order_number);
 	if (it == _packets.end())
@@ -61,9 +61,9 @@ uint16_t RtpFrame::GetOrderNumber(uint16_t sequence_number)
 
 	if (sequence_number > _first_sequence_number)
 	{
-		if (sequence_number - _first_sequence_number > (std::numeric_limits<uint16_t>::max() / 2))
+		if (sequence_number - _first_sequence_number > _base_order_number + 1)
 		{
-			// out of order : 0 -> 65535 ==> gap : -1 
+			// out of order : 0 -> 65535 ==> gap : -1
 			uint16_t gap = std::numeric_limits<uint16_t>::max() - sequence_number + _first_sequence_number + 1;
 			return _base_order_number - gap;
 		}
@@ -75,7 +75,7 @@ uint16_t RtpFrame::GetOrderNumber(uint16_t sequence_number)
 	}
 	else
 	{
-		if (_first_sequence_number - sequence_number > (std::numeric_limits<uint16_t>::max() / 2))
+		if (_first_sequence_number - sequence_number > _base_order_number)
 		{
 			// Roll over : 65535 -> 0 ==> gpa : +1
 			uint16_t gap = std::numeric_limits<uint16_t>::max() - _first_sequence_number + sequence_number + 1;
@@ -92,7 +92,7 @@ uint16_t RtpFrame::GetOrderNumber(uint16_t sequence_number)
 	return 0;
 }
 
-bool RtpFrame::InsertPacket(const std::shared_ptr<RtpPacket> &packet)
+bool RtpFrame::InsertPacket(const std::shared_ptr<RtpPacket>& packet)
 {
 	if (packet == nullptr || packet->Timestamp() != _timestamp)
 	{
@@ -114,6 +114,7 @@ bool RtpFrame::InsertPacket(const std::shared_ptr<RtpPacket> &packet)
 	{
 		_marked = true;
 		_marker_sequence_number = packet->SequenceNumber();
+		_marked_time = std::chrono::system_clock::now();
 	}
 
 	// Check if frame is completed
@@ -158,6 +159,13 @@ bool RtpFrame::CheckCompleted()
 		return false;
 	}
 
+	auto elapsed_ms = ov::Clock::GetElapsedMiliSecondsFromNow(_marked_time);
+	if (elapsed_ms < _marker_completion_delay_ms)
+	{
+		// Wait for a delay to ensure that the "marked" packet was not received before the other packets.
+		return false;
+	}
+
 	// Check number of packets
 	uint16_t need_number_of_packets = _max_order_number - _min_order_number + 1;
 
@@ -197,19 +205,27 @@ uint64_t RtpFrameJitterBuffer::GetExtentedTimestamp(uint32_t timestamp)
 	return (static_cast<uint64_t>(_timestamp_cycle) << 32) | timestamp;
 }
 
-bool RtpFrameJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket> &packet)
+bool RtpFrameJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket>& packet)
 {
-	auto timestamp = GetExtentedTimestamp(packet->Timestamp());
+	auto extended_timestamp = GetExtentedTimestamp(packet->Timestamp());
+	
+	// Already it determined this packet was lost
+	if (extended_timestamp <= _last_extended_timestamp)
+	{
+		return false;  // packet of previous frame
+	}
 
-	auto it = _rtp_frames.find(timestamp);
+	auto it = _rtp_frames.find(extended_timestamp);
 	std::shared_ptr<RtpFrame> frame;
 
 	if (it == _rtp_frames.end())
 	{
-		logtd("Create frame buffer for timestamp %llu", timestamp);
-		// First packet of frame
+		logtd("Create frame buffer for timestamp %llu", extended_timestamp);
+		// First packet received of frame (not sure is really the first packet) 
 		frame = std::make_shared<RtpFrame>(packet->Timestamp());
-		_rtp_frames[timestamp] = frame;
+		frame->SetMaxBufferingTime(_first_frame ? DEFAULT_VIDEO_FIRST_FRAME_MAX_BUFFERING_TIME_MS : DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS);
+		_first_frame = false;
+		_rtp_frames[extended_timestamp] = frame;
 	}
 	else
 	{
@@ -223,33 +239,28 @@ bool RtpFrameJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket> &packet
 
 void RtpFrameJitterBuffer::BurnOutExpiredFrames()
 {
-	// If there are completed frames among the frames, all previous frames are deleted.
-
-	// Find first completed frame
-	auto completed_frame_it = _rtp_frames.begin();
-	while (completed_frame_it != _rtp_frames.end())
+	for (auto it = _rtp_frames.begin(); it != _rtp_frames.end();)
 	{
-		auto frame = completed_frame_it->second;
+		auto extended_timestamp = it->first;
+		auto frame = it->second;
+		const uint64_t age = frame->GetElapsed();
+
 		if (frame->IsCompleted())
 		{
-			break;
+			++it;
+			continue;
 		}
-		++completed_frame_it;
-	}
-
-	if (completed_frame_it == _rtp_frames.begin() || completed_frame_it == _rtp_frames.end())
-	{
-		// No burn outted frame and completed frame
-		return;
-	}
-
-	// Delete from begin to completed frame (not included)
-	auto it = _rtp_frames.begin();
-	while (it != completed_frame_it)
-	{
-		auto frame = it->second;
-		logtd("Frame discarded (It may be PADDING frame for BWE) - timestamp(%u) packets(%d) marked(%s)", frame->Timestamp(), frame->PacketCount(), frame->IsMarked() ? "true" : "false");
-		it = _rtp_frames.erase(it);
+		auto max_buffering_time_ms = frame->GetMaxBufferingTime();
+		if (max_buffering_time_ms > 0 && age > max_buffering_time_ms)
+		{
+			logtw("Dropping expired frame - timestamp(%u) age(%llu ms)", frame->Timestamp(), age);
+			_last_extended_timestamp = extended_timestamp;
+			it = _rtp_frames.erase(it);
+		}
+		else
+		{
+			++it;
+		}
 	}
 }
 
@@ -275,7 +286,10 @@ std::shared_ptr<RtpFrame> RtpFrameJitterBuffer::PopAvailableFrame()
 	}
 
 	auto it = _rtp_frames.begin();
+	auto extended_timestamp = it->first;
 	auto frame = it->second;
+
+	_last_extended_timestamp = extended_timestamp;
 
 	logtd("Pop frame - extended(%llu) timestamp(%u) packets(%d) frames(%u)", it->first, frame->Timestamp(), frame->PacketCount(), _rtp_frames.size());
 
