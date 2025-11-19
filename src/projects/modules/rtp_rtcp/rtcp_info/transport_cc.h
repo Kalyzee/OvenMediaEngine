@@ -41,16 +41,17 @@ public:
 	{
 		// constructor
 		PacketFeedbackInfo() = default;
-		PacketFeedbackInfo(uint16_t sequence_number, bool received, uint8_t delta_size = 0, int32_t received_delta = 0)
+		PacketFeedbackInfo(uint16_t sequence_number, bool received, uint32_t received_time = 0)
 			: _wide_sequence_number(sequence_number),
 			_received(received),
-			_delta_size(delta_size),
-			_received_delta(received_delta)
+			_received_time_us(received_time)
 		{
 		}
 
 		uint16_t _wide_sequence_number = 0;
 		bool _received = false;
+		int64_t _received_time_us = 0;  // absolute time. multiple of 64us (same reference point as the reference_time_us)
+		bool _calculated = false;
 		uint8_t _delta_size = 0; // 0, 1, 2, 3
 		int32_t _received_delta = 0;	// 1/4000 scale
 	};
@@ -79,15 +80,31 @@ public:
 	{
 		return false;
 	}
-	
+
 	// Common Feedback
 	uint32_t GetSenderSsrc(){return _sender_ssrc;}
 	void SetSenderSsrc(uint32_t ssrc){_sender_ssrc = ssrc;}
 	uint32_t GetMediaSsrc(){return _media_ssrc;}
 	void SetMediaSsrc(uint32_t ssrc){_media_ssrc = ssrc;}
 
+	// Stop
+	int64_t GetElasped()
+	{
+		if (_stopped_time < 0) 
+		{
+			return -1;
+		}
+		return ov::Time::GetTimestampInMs() - _stopped_time;
+	}
+	void Stop()
+	{
+		_stopped_time = ov::Time::GetTimestampInMs();
+	}
+
 	// Transport Feedback
 	uint16_t GetBaseSequenceNumber(){return _base_sequence_number;}
+	uint32_t GetMaxSequenceNumber(){return _max_sequence_number;}
+
 	int32_t GetReferenceTime(){return _reference_time;}
 	uint16_t GetPacketStatusCount(){return _packet_status_count;}
 
@@ -95,16 +112,26 @@ public:
 	void SetBaseSequenceNumber(uint16_t base_sequence_number)
 	{
 		_base_sequence_number = base_sequence_number;
-		_next_sequence_number = base_sequence_number;	
 	}
-	void SetReferenceTime(int32_t reference_time){_reference_time = reference_time;}
-
-	void SetFeedbackPacketCount(uint8_t sequence_number)
+		void SetMaxSequenceNumber(uint32_t max_sequence_number)
 	{
-		_fb_packet_count = sequence_number;
+		_max_sequence_number = max_sequence_number;
+	}
+	void SetReferenceTime(int32_t reference_time)
+	{
+		_reference_time = reference_time;
+	}
+	void SetReferenceTimeUs(int64_t reference_time_us)
+	{
+		_reference_time = reference_time_us / 1000;
+		_reference_time_us = reference_time_us;
+	}
+	void SetFeedbackPacketCount(uint8_t fb_packet_count)
+	{
+		_fb_packet_count = fb_packet_count;
 	}
 
-	// Add PacketFeedbackInfo
+	// PacketFeedbackInfo
 	bool AddPacketFeedbackInfo(const std::shared_ptr<PacketFeedbackInfo> &packet_feedback_info);
 
 	// 0 ~ StatusCount - 1
@@ -123,6 +150,20 @@ public:
 		return _packet_feedbacks;
 	}
 
+	bool AllPacketsReceived()
+	{
+		for (auto it = _packet_feedbacks.begin(); it != _packet_feedbacks.end(); ++it)
+		{
+			if (!it->get()->_received) 
+			{
+				return false;
+			}
+  	}
+		return true;
+	}
+
+	bool CalculeDeltas();
+
 private:
 	uint8_t GetDeltaSize(uint8_t symbol)
 	{
@@ -140,13 +181,17 @@ private:
 
 	bool CountSymbolContinuity(uint32_t feedbacks_index, uint16_t &run_length, uint16_t &one_bit_symbol_length) const;
 
+	int64_t _stopped_time = -1;
+
 	uint32_t _sender_ssrc = 0;
 	uint32_t _media_ssrc = 0;
 
 	uint16_t _base_sequence_number = 0;
-	uint16_t _next_sequence_number = 0;
+	uint32_t _max_sequence_number = 0;
+
 	uint16_t _packet_status_count = 0;
 	int32_t _reference_time = 0; // 24bit signed integer (64/1000 scale, multiples of 64ms)
+	int64_t _reference_time_us = 0;
 	uint8_t _fb_packet_count = 0;
 
 	mutable bool _has_padding = false;

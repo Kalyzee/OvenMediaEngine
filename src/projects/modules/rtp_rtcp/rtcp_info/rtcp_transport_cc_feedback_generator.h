@@ -9,8 +9,12 @@
 #pragma once
 
 #include <base/ovlibrary/ovlibrary.h>
+
 #include "../rtp_packet.h"
 #include "transport_cc.h"
+
+#define TRANSPORT_CC_CYCLE_MS 50
+#define TRANSPORT_CC_MAX_BUFFERING_TIME_MS 10
 
 // https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01
 
@@ -22,7 +26,6 @@
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 // |  ID   | L=1   |transport-wide sequence number | zero padding  |
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
 
 // RTCP Message Format
 //  0                   1                   2                   3
@@ -54,35 +57,34 @@
 class RtcpTransportCcFeedbackGenerator
 {
 public:
-	RtcpTransportCcFeedbackGenerator(uint8_t extension_id, uint32_t sender_ssrc);
+	RtcpTransportCcFeedbackGenerator(uint8_t extension_id, uint32_t _sender_ssrc);
 
-	bool AddReceivedRtpPacket(const std::shared_ptr<RtpPacket> &packet);
+	bool AddReceivedRtpPacket(const std::shared_ptr<RtpPacket>& packet);
 	bool HasElapsedSinceLastTransportCc(uint32_t milliseconds);
-	std::shared_ptr<RtcpPacket> GenerateTransportCcMessage();
-	uint32_t GetPacketStatusCount() const
-	{
-		if (_transport_cc == nullptr)
-		{
-			return 0;
-		}
+	std::shared_ptr<TransportCc> PopAvailableTransportCc();
+	bool StopCurrentTransportCc();
+	std::shared_ptr<RtcpPacket> GenerateTransportCcMessage(std::shared_ptr<TransportCc> transport_cc);
 
-		return _transport_cc->GetPacketStatusCount();
+	int64_t GetTime(std::chrono::_V2::system_clock::time_point time) const
+	{
+		return std::chrono::duration_cast<std::chrono::microseconds>(time - _created_time).count() / 64;
 	}
 
 private:
+	std::shared_ptr<TransportCc> CreateTransportCc(uint16_t wide_sequence_number);
+
 	std::chrono::high_resolution_clock::time_point _created_time;
 	uint8_t _extension_id = 0;
 	uint32_t _sender_ssrc = 0;
-	uint32_t _last_media_ssrc = 0;
 
 	bool _is_first_packet = true;
 	uint16_t _last_wide_sequence_number = 0;
 
 	uint8_t _fb_pkt_count = 0;
 
-	std::chrono::high_resolution_clock::time_point _last_reference_time; // multiples of 64ms, now() - created_time base
 	std::chrono::high_resolution_clock::time_point _last_rtp_received_time;
 	std::shared_ptr<TransportCc> _transport_cc = nullptr;
+	std::vector<std::shared_ptr<TransportCc>> _last_transport_ccs;
 
 	std::chrono::high_resolution_clock::time_point _last_report_time;
 };

@@ -183,14 +183,14 @@ namespace pvd
 				AddTrack(audio_track);
 				_rtp_rtcp->AddRtpReceiver(ssrc, audio_track);
 
-				if (_rtp_rtcp->IsTransportCcFeedbackEnabled() == false && first_payload->IsRtcpFbEnabled(PayloadAttr::RtcpFbType::TransportCc) == true)
+				if (_rtp_rtcp->IsTransportCcFeedbackEnabled(ssrc) == false /*&& first_payload->IsRtcpFbEnabled(PayloadAttr::RtcpFbType::TransportCc) == true*/)
 				{
 					// a=extmap:id http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
 					uint8_t transport_cc_extension_id = 0;
 					ov::String transport_cc_extension_uri;
 					if (answer_media_desc->FindExtmapItem("transport-wide-cc-extensions", transport_cc_extension_id, transport_cc_extension_uri) == true)
 					{
-						_rtp_rtcp->EnableTransportCcFeedback(transport_cc_extension_id);
+						_rtp_rtcp->EnableTransportCcFeedback(ssrc, transport_cc_extension_id);
 					}
 				}
 
@@ -241,14 +241,14 @@ namespace pvd
 				AddTrack(video_track);
 				_rtp_rtcp->AddRtpReceiver(ssrc, video_track);
 
-				if (_rtp_rtcp->IsTransportCcFeedbackEnabled() == false && first_payload->IsRtcpFbEnabled(PayloadAttr::RtcpFbType::TransportCc) == true)
+				if (_rtp_rtcp->IsTransportCcFeedbackEnabled(ssrc) == false /*&& first_payload->IsRtcpFbEnabled(PayloadAttr::RtcpFbType::TransportCc) == true*/)
 				{
 					// a=extmap:id http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
 					uint8_t transport_cc_extension_id = 0;
 					ov::String transport_cc_extension_uri;
 					if (answer_media_desc->FindExtmapItem("transport-wide-cc-extensions", transport_cc_extension_id, transport_cc_extension_uri) == true)
 					{
-						_rtp_rtcp->EnableTransportCcFeedback(transport_cc_extension_id);
+						_rtp_rtcp->EnableTransportCcFeedback(ssrc, transport_cc_extension_id);
 					}
 				}
 
@@ -277,8 +277,6 @@ namespace pvd
 		RegisterPrevNode(_dtls_transport);
 		RegisterNextNode(nullptr);
 		ov::Node::Start();
-
-		_fir_timer.Start();
 
 		_sent_sequence_header = false;
 
@@ -466,14 +464,17 @@ namespace pvd
 		* From web, receiving the pushed stream takes 2/3 seconds less
 		if (timestamp_is_adjusted == false)
 		{
-			ogtd("not yet received sr packet : %u", first_rtp_packet->Ssrc());
+			logtd("not yet received sr packet : %u", first_rtp_packet->Ssrc());
 			// Prevents the stream from being deleted because there is no input data
 			// MonitorInstance->IncreaseBytesIn(*Stream::GetSharedPtr(), bitstream->GetLength());
 			return;
 		}
 		*/
 
-		int64_t dts = adjusted_timestamp;
+    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+		// printf("AdjustRtpTimestamp - webrtc : %d %u %d %ld %u  %ld\n", bitstream_format, first_rtp_packet->Ssrc(), timestamp_is_adjusted, adjusted_timestamp, first_rtp_packet->Timestamp(), now);
+		auto pts = adjusted_timestamp;
+		auto dts = pts;
 		if (cts_enabled == true)
 		{
 			auto cts_extension_opt = first_rtp_packet->GetExtension<int24_t>(_cts_extmap_id);
@@ -496,7 +497,7 @@ namespace pvd
 												   track->GetMediaType(),
 												   track->GetId(),
 												   bitstream,
-												   adjusted_timestamp,
+												   pts,
 												   dts,
 												   bitstream_format,
 												   packet_type);
@@ -516,7 +517,7 @@ namespace pvd
 					{
 						auto last_slice_type = _h264_bitstream_parser.GetLastSliceType();
 
-						logtd("PTS(%lld) DTS(%lld) Slice Type(%d)", adjusted_timestamp, dts, last_slice_type.has_value()?static_cast<int>(last_slice_type.value()):-1);
+						logtd("PTS(%lld) DTS(%lld) Slice Type(%d)", pts, dts, last_slice_type.has_value()?static_cast<int>(last_slice_type.value()):-1);
 
 						if (last_slice_type.has_value() == true && last_slice_type.value() != H264SliceType::B)
 						{
@@ -561,11 +562,27 @@ namespace pvd
 		SendFrame(media_packet);
 
 		// Send FIR to reduce keyframe interval
-		if (_fir_timer.IsElapsed(3000) && track->GetMediaType() == cmn::MediaType::Video)
+		if (track->GetMediaType() == cmn::MediaType::Video) 
 		{
-			_fir_timer.Update();
-			//_rtp_rtcp->SendPLI(first_rtp_packet->Ssrc());
-			_rtp_rtcp->SendFIR(track->GetId());
+			auto send_fir = false;
+			if (_fir_timer.IsStart()) 
+			{
+				if (_fir_timer.IsElapsed(3000)) 
+				{
+					_fir_timer.Update();
+					send_fir = true;
+				}
+			} 
+			else 
+			{
+				_fir_timer.Start();
+				send_fir = true;
+			}
+
+			if (send_fir) 
+			{
+				_rtp_rtcp->SendFIR(track->GetId());
+			}
 		}
 
 		// Send Receiver Report

@@ -62,7 +62,10 @@ public:
 	uint32_t GetMediaSsrc(){return _media_ssrc;}
 	void SetMediaSsrc(uint32_t ssrc){_media_ssrc = ssrc;}
 
-	size_t GetLostIdCount(){return _lost_ids.size();}
+	size_t GetLostIdCount() const 
+	{
+		return _lost_ids.size();
+	}
 	uint16_t GetLostId(size_t index)
 	{
 		if(index > GetLostIdCount() - 1)
@@ -71,6 +74,12 @@ public:
 		}
 
 		return _lost_ids[index];
+	}
+
+	bool AddLostId(uint16_t id)
+	{
+		_lost_ids.push_back(id);
+		return true;
 	}
 
 private:

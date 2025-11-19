@@ -17,12 +17,11 @@ RtcpTransportCcFeedbackGenerator::RtcpTransportCcFeedbackGenerator(uint8_t exten
 {
 	_extension_id = extension_id;
 	_sender_ssrc = sender_ssrc;
-
 	_created_time = std::chrono::system_clock::now();
 	_last_report_time = _created_time;
 }
 
-bool RtcpTransportCcFeedbackGenerator::AddReceivedRtpPacket(const std::shared_ptr<RtpPacket> &packet)
+bool RtcpTransportCcFeedbackGenerator::AddReceivedRtpPacket(const std::shared_ptr<RtpPacket>& packet)
 {
 	auto wide_sequence_number_opt = packet->GetExtension<uint16_t>(_extension_id);
 	if (wide_sequence_number_opt.has_value() == false)
@@ -42,114 +41,51 @@ bool RtcpTransportCcFeedbackGenerator::AddReceivedRtpPacket(const std::shared_pt
 
 	logtd("AddReceivedRtpPacket: wide_seq(%u) %s", wide_sequence_number, packet->Dump().CStr());
 
-	// Add feedback info
-	int64_t delta = 0;
-	uint8_t delta_size = 0;
+	auto transport_cc = _transport_cc;
+	for (auto it = _last_transport_ccs.begin(); it != _last_transport_ccs.end(); ++it)
+	{
+		auto curr = *it;
+		if (wide_sequence_number > curr->GetBaseSequenceNumber() && wide_sequence_number <= curr->GetMaxSequenceNumber())
+		{
+			// complete transport_cc buffered
+			transport_cc = curr;
+			break;
+		}
+	}
 
 	// first packet of feedback message
-	if (_transport_cc == nullptr)
+	if (transport_cc == nullptr)
 	{
-		_transport_cc = std::make_shared<TransportCc>();
-
-		_transport_cc->SetFeedbackPacketCount(_fb_pkt_count);
-		_fb_pkt_count++;
-
-		_transport_cc->SetSenderSsrc(_sender_ssrc);
-		_transport_cc->SetBaseSequenceNumber(wide_sequence_number);
-
-		// Reference time
-		_last_reference_time = std::chrono::system_clock::now();
-
-		// multiples of 64ms
-		uint32_t reference_time = std::chrono::duration_cast<std::chrono::milliseconds>(_last_reference_time - _created_time).count() / 64;
-
-		_transport_cc->SetReferenceTime(reference_time);
-
-		// Base sequence number
-		uint16_t base_sequence_number = 0;
-		if (_is_first_packet == true)
+		transport_cc = CreateTransportCc(wide_sequence_number);
+		for (auto it = _last_transport_ccs.begin(); it != _last_transport_ccs.end(); ++it)
 		{
-			_is_first_packet = false;
-			base_sequence_number = wide_sequence_number;
+			auto curr = *it;
+			uint32_t max = wide_sequence_number - 1;
+			if (wide_sequence_number == 0) max = std::numeric_limits<uint16_t>::max();
+			else if (max < curr->GetBaseSequenceNumber()) max += std::numeric_limits<uint16_t>::max();
+			curr->SetMaxSequenceNumber(max);
 		}
-		else
-		{
-			if (wide_sequence_number != static_cast<uint16_t>(_last_wide_sequence_number + 1))
-			{
-				logtw("wide sequence number is not continuous : %u -> %u", _last_wide_sequence_number, wide_sequence_number);
-			}
-
-			base_sequence_number = _last_wide_sequence_number + 1;
-		}
-
-		_transport_cc->SetBaseSequenceNumber(base_sequence_number);
-
-		// Delta of first packet : Decimal part in reference_time is expressed in units of 250us.
-		// The integer part in reference_time is expressed in units of 64ms.
-		double decimal = static_cast<double>((std::chrono::duration_cast<std::chrono::milliseconds>(_last_reference_time - _created_time).count() / 64.0)) - static_cast<double>(reference_time);
-
-		// to multiple of 250 microseconds
-		decimal = (decimal * 64 * 1000) / 250;
-		delta = static_cast<int64_t>(decimal);
-
-		_last_rtp_received_time = _last_reference_time;
-
-		logtd("last rtp received time : %lld", std::chrono::duration_cast<std::chrono::milliseconds>(_last_rtp_received_time.time_since_epoch()).count());
+		_transport_cc = transport_cc;
 	}
-	else
+	auto now = std::chrono::system_clock::now();
+	transport_cc->AddPacketFeedbackInfo(std::make_shared<TransportCc::PacketFeedbackInfo>(wide_sequence_number, true, GetTime(now)));
+	transport_cc->SetMediaSsrc(packet->Ssrc());
+
+	_last_rtp_received_time = now;
+
+	auto l = _last_wide_sequence_number;
+
+	if (wide_sequence_number >= _last_wide_sequence_number)
 	{
-		// delta : multiple of 250us from the last rtp received time
-		auto now = std::chrono::system_clock::now();
-		int64_t diff = std::chrono::duration_cast<std::chrono::microseconds>(now - _last_rtp_received_time).count();
-		delta = diff / 250;
-
-		if (delta < 0)
-		{
-			logtw("delta is negative : %d", delta);
-		}
-
-		_last_rtp_received_time = now;
-
-		logtd("last rtp received time : %lld, diff(%lld), delta(%d)", std::chrono::duration_cast<std::chrono::milliseconds>(_last_rtp_received_time.time_since_epoch()).count(), diff, delta);
+		auto last_wide_sequence_number_roll_over = wide_sequence_number - _last_wide_sequence_number > 0x8000;
+		_last_wide_sequence_number = last_wide_sequence_number_roll_over ? _last_wide_sequence_number : wide_sequence_number;
 	}
-
-	// delta size
-	// 1 : [0 ~ 63.75ms] (0 * 250us ~ 0xFF * 250us)
-	// 2 : [-8192.0 ~ 8191.75ms] (-0x8000 * 250us ~ 0x7FFF * 250us)
-	if (delta >= 0 && delta <= 0xFF)
+	else if (_last_wide_sequence_number > wide_sequence_number) 
 	{
-		delta_size = 1;
+		// Roll over
+		auto wide_sequence_number_roll_over = _last_wide_sequence_number - wide_sequence_number > 0x8000;
+		_last_wide_sequence_number = wide_sequence_number_roll_over ? wide_sequence_number : _last_wide_sequence_number;
 	}
-	else if (delta >= -0x8000 && delta <= 0x7FFF)
-	{
-		delta_size = 2;
-	}
-	// https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01#section-3.1.5
-	// If the delta exceeds even the larger limits, a new feedback
-	// message must be used, where the 24-bit base receive delta can
-	// cover very large gaps.
-
-	// TODO(Getroot) : If the delta exceeds the large range,
-	// a new feedback message is created and the delta of the packet is reduced
-	// using the 24-bit reference time. However, this is a very inefficient
-	// specification because only one delta is entered in one feedback message
-	// in the worst case in a very slow situation. Temporarily, I clamped the min/max,
-	// and I'll try to see if there is a way to improve this.
-	else if (delta < -0x8000)
-	{
-		delta = -0x8000;
-		delta_size = 2;
-	}
-	else if (delta > 0x7FFF)
-	{
-		delta = 0x7FFF;
-		delta_size = 2;
-	}
-
-	_transport_cc->AddPacketFeedbackInfo(std::make_shared<TransportCc::PacketFeedbackInfo>(wide_sequence_number, true, delta_size, delta));
-
-	_last_wide_sequence_number = wide_sequence_number;
-	_last_media_ssrc = packet->Ssrc();
 
 	return true;
 }
@@ -167,24 +103,80 @@ bool RtcpTransportCcFeedbackGenerator::HasElapsedSinceLastTransportCc(uint32_t m
 	return false;
 }
 
-std::shared_ptr<RtcpPacket> RtcpTransportCcFeedbackGenerator::GenerateTransportCcMessage()
+std::shared_ptr<TransportCc> RtcpTransportCcFeedbackGenerator::PopAvailableTransportCc()
+{
+	for (int i = _last_transport_ccs.size() - 1; i >= 0; --i)
+	{
+		auto transport_cc = _last_transport_ccs[i];
+		if (transport_cc->AllPacketsReceived() || transport_cc->GetElasped() > TRANSPORT_CC_MAX_BUFFERING_TIME_MS)
+		{
+			_last_transport_ccs.erase(_last_transport_ccs.begin() + i);
+			return transport_cc;
+		}
+	}
+	return nullptr;
+}
+
+bool RtcpTransportCcFeedbackGenerator::StopCurrentTransportCc()
 {
 	if (_transport_cc == nullptr)
+	{
+		return false;
+	}
+	_transport_cc->Stop();
+	_last_transport_ccs.push_back(_transport_cc);
+	_transport_cc = nullptr;
+	return true;
+}
+
+std::shared_ptr<TransportCc> RtcpTransportCcFeedbackGenerator::CreateTransportCc(uint16_t wide_sequence_number)
+{
+	auto now = std::chrono::system_clock::now();
+	auto transport_cc = std::make_shared<TransportCc>();
+	auto reference_time_us = GetTime(now);
+
+	transport_cc->SetSenderSsrc(_sender_ssrc);
+	transport_cc->SetFeedbackPacketCount(_fb_pkt_count);
+	_fb_pkt_count++;
+	transport_cc->SetReferenceTimeUs(reference_time_us);
+
+	// Base sequence number
+	uint16_t base_sequence_number = 0;
+	if (_is_first_packet == true)
+	{
+		_is_first_packet = false;
+		base_sequence_number = wide_sequence_number;
+	}
+	else
+	{
+		if (wide_sequence_number != static_cast<uint16_t>(_last_wide_sequence_number + 1))
+		{
+			logtw("wide sequence number is not continuous : %u -> %u", _last_wide_sequence_number, wide_sequence_number);
+		}
+
+		base_sequence_number = _last_wide_sequence_number + 1;
+	}
+
+	transport_cc->SetBaseSequenceNumber(base_sequence_number);
+
+	return transport_cc;
+}
+
+std::shared_ptr<RtcpPacket> RtcpTransportCcFeedbackGenerator::GenerateTransportCcMessage(std::shared_ptr<TransportCc> transport_cc)
+{
+	if (transport_cc == nullptr)
 	{
 		return nullptr;
 	}
 
-	_transport_cc->SetMediaSsrc(_last_media_ssrc);
-
 	logtd("Generate Transport CC message : Sender SSRC(%u), Media SSRC(%u), Base Sequence Number(%u), Reference Time(%u), Packet Feedback Count(%u)",
-		  _transport_cc->GetSenderSsrc(), _transport_cc->GetMediaSsrc(), _transport_cc->GetBaseSequenceNumber(), _transport_cc->GetReferenceTime(), _transport_cc->GetPacketStatusCount());
+		  transport_cc->GetSenderSsrc(), transport_cc->GetMediaSsrc(), transport_cc->GetBaseSequenceNumber(), transport_cc->GetReferenceTime(), transport_cc->GetPacketStatusCount());
 
 	auto rtcp_packet = std::make_shared<RtcpPacket>();
-	rtcp_packet->Build(_transport_cc);
+	transport_cc->CalculeDeltas();
+	rtcp_packet->Build(transport_cc);
 
 	_last_report_time = std::chrono::system_clock::now();
-
-	_transport_cc.reset();
 
 	return rtcp_packet;
 }
