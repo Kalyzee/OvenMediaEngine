@@ -75,14 +75,24 @@ void RtpReceiveStatistics::InitSeq(uint16_t seq)
 bool RtpReceiveStatistics::UpdateSeq(uint16_t seq)
 {
 	// Wrapped
-	if (seq < _highest_seq && _highest_seq - seq > RTP_SEQ_MOD / 2)
+	if (seq < _highest_seq)
 	{
-		_cycles += RTP_SEQ_MOD;
+		auto roll_over = _highest_seq - seq > RTP_SEQ_MOD / 2;
+		if (roll_over)
+		{
+			_cycles += RTP_SEQ_MOD;
+			_highest_seq = seq;
+		}
+	}
+	else 
+	{
+		auto roll_over_already_done = seq - _highest_seq > RTP_SEQ_MOD / 2;
+		if (!roll_over_already_done)
+		{
+			_highest_seq = seq;
+		}
 	}
 	
-	// TODO(Getroot): Check "large jump", "probation" and "reordered/duplicate"
-	_highest_seq = seq;
-
 	//logi("DEBUG", "RTP: UpdateSeq - extended seq(%u) cycles(%u), highest_seq(%u)", _cycles + _highest_seq, _cycles, _highest_seq);
 
 	return true;
@@ -90,12 +100,12 @@ bool RtpReceiveStatistics::UpdateSeq(uint16_t seq)
 
 bool RtpReceiveStatistics::UpdateStat(const std::shared_ptr<RtpPacket> &packet)
 {
+	auto now = std::chrono::system_clock::now();
 	// Jitter
 	if (_received_packets > 0 && _last_rtp_timestamp != packet->Timestamp())
 	{
 		int64_t rtp_timestamp_diff = packet->Timestamp() - _last_rtp_timestamp;
 
-		auto now = std::chrono::system_clock::now();
 		int64_t rtp_received_time_diff = std::chrono::duration_cast<std::chrono::microseconds>(now - _last_rtp_received_time).count();
 
 		// Calculate wall clock diff in RTP timestamp units
@@ -114,7 +124,7 @@ bool RtpReceiveStatistics::UpdateStat(const std::shared_ptr<RtpPacket> &packet)
 	}
 	else if (_received_packets == 0)
 	{
-		_last_rtp_received_time = std::chrono::system_clock::now();
+		_last_rtp_received_time =now;
 		_last_rtp_timestamp = packet->Timestamp();
 	}
 
