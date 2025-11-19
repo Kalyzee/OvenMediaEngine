@@ -281,7 +281,7 @@ namespace pvd
 
 	bool Stream::AdjustRtpTimestamp(uint32_t track_id, int64_t timestamp, int64_t max_timestamp, int64_t &adjusted_timestamp)
 	{
-		// Make decision timestamp calculation method	
+		// Make decision timestamp calculation method
 		if (_rtp_timestamp_method == RtpTimestampCalculationMethod::UNDER_DECISION)
 		{
 			if (GetDirectionType() == DirectionType::PULL)
@@ -308,7 +308,12 @@ namespace pvd
 					logti("Since this stream has a single track, it computes PTS alone without RTCP SR.");
 					_rtp_timestamp_method = RtpTimestampCalculationMethod::SINGLE_DELTA;
 				}
-				else if (_rtp_lip_sync_clock.IsEnabled() == true)
+				else
+				{
+					logti("Since this stream has received an RTCP SR, it counts the PTS with the SR.");
+					_rtp_timestamp_method = RtpTimestampCalculationMethod::WITH_RTCP_SR;
+				}
+				/*else if (_rtp_lip_sync_clock.IsEnabled() == true)
 				{
 					logti("Since this stream has received an RTCP SR, it counts the PTS with the SR.");
 					_rtp_timestamp_method = RtpTimestampCalculationMethod::WITH_RTCP_SR;
@@ -327,8 +332,8 @@ namespace pvd
 						logtw("Wait for RTCP SR for 5 seconds before starting the stream.");
 						_first_rtp_received_time.Start();
 					}
-					return false; 
-				}
+					return false;
+				}*/
 			}
 		}
 
@@ -402,12 +407,22 @@ namespace pvd
 		if (_wraparound_count_map[0].find(track_id) == _wraparound_count_map[0].end())
 		{
 			_wraparound_count_map[0][track_id] = 0;
+			// Initialize a positive final_pkt_pts_tb
+			while (final_pkt_pts_tb + _wraparound_count_map[0][track_id] * max_timestamp < 0)
+			{
+				_wraparound_count_map[0][track_id]++;
+			}
 		}
 
 		// Initialize wraparound count for DTS
 		if (_wraparound_count_map[1].find(track_id) == _wraparound_count_map[1].end())
 		{
 			_wraparound_count_map[1][track_id] = 0;
+			// Initialize a positive final_pkt_dts_tb
+			while (final_pkt_dts_tb + _wraparound_count_map[1][track_id] * max_timestamp < 0)
+			{
+				_wraparound_count_map[1][track_id]++;
+			}
 		}
 
 		// For PTS

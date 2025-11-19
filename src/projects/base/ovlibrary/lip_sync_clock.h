@@ -13,6 +13,7 @@ public:
 	bool UpdateSenderReportTime(uint32_t id, uint32_t ntp_msw, uint32_t ntp_lsw, uint32_t rtcp_timestamp);
 
 	bool IsEnabled() {return _enabled;}
+	bool RtpClockIsReady(uint32_t id);
 
 private:
 	struct Clock
@@ -25,6 +26,11 @@ private:
 		uint32_t 	_last_rtp_timestamp = 0;
 		uint64_t	_extended_rtp_timestamp = 0;
 		uint64_t	_pts = 0;	// converted NTP timestamp to timebase timestamp
+		bool _first_pts = true;
+		bool _first_sr = true;
+		bool _ready = false;
+		uint64_t _adjust_pts = 0;
+		uint64_t	_offset_pts = 0;
 	};
 
 	// Id, Clock
@@ -33,8 +39,4 @@ private:
 	bool _enabled = false;
 
 	std::shared_ptr<Clock> GetClock(uint32_t id);
-
-	bool _first_pts = true;
-	bool _first_sr = true;
-	uint64_t _adjust_pts_us = 0;
 };
