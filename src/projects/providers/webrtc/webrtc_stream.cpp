@@ -241,6 +241,11 @@ namespace pvd
 				AddTrack(video_track);
 				_rtp_rtcp->AddRtpReceiver(ssrc, video_track);
 
+				if (remote_media_desc->GetContent().IsEmpty() == false)
+				{
+					_rtp_rtcp->SetContentMediaType(ssrc, remote_media_desc->GetContent());
+				}
+
 				if (_rtp_rtcp->IsTransportCcFeedbackEnabled(ssrc) == false /*&& first_payload->IsRtcpFbEnabled(PayloadAttr::RtcpFbType::TransportCc) == true*/)
 				{
 					// a=extmap:id http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01

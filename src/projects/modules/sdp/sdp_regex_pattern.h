@@ -75,6 +75,8 @@ public:
 		RegisterPattern(_fmtp_pattern, R"(fmtp:(\*|\d*) (.*))");
 		RegisterPattern(_extmap_pattern, R"(^extmap:([\w_/]*) (\S*)(?: (\S*))?)");
 
+		RegisterPattern(_content_pattern, R"(^content:(.*))"); // https://www.cs.columbia.edu/sip/drafts/mmusic/draft-hautakorpi-mmusic-sdp-media-content-00.txt
+
 		_built = true;
 
 		return true;
@@ -115,6 +117,7 @@ public:
 	RegisterMatchFunction(_fmtp_pattern, MatchFmtp)
 	RegisterMatchFunction(_extmap_pattern, MatchExtmap)
 
+	RegisterMatchFunction(_content_pattern, MatchContent)
 private:
 	bool _built = false;
 
@@ -152,4 +155,6 @@ private:
 
 	ov::Regex _fmtp_pattern; // a=fmtp:96 packetization-mode=xx ~~
 	ov::Regex _extmap_pattern; // a=extmap:1 urn:ietf:params:~
+	ov::Regex _content_pattern; // a=content:
+
 };

@@ -223,7 +223,7 @@ bool RtpFrameJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket>& packet
 		logtd("Create frame buffer for timestamp %llu", extended_timestamp);
 		// First packet received of frame (not sure is really the first packet) 
 		frame = std::make_shared<RtpFrame>(packet->Timestamp());
-		frame->SetMaxBufferingTime(_first_frame ? DEFAULT_VIDEO_FIRST_FRAME_MAX_BUFFERING_TIME_MS : DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS);
+		frame->SetMaxBufferingTime(_default_max_buffering_time_ms);
 		_first_frame = false;
 		_rtp_frames[extended_timestamp] = frame;
 	}

@@ -102,12 +102,14 @@ public:
 
 	// a=ssrc:2064629418 cname:{b2266c86-259f-4853-8662-ea94cf0835a3}
 	void SetCname(const ov::String &cname);
+	void SetContent(const ov::String &content);
 	void SetSsrc(uint32_t ssrc);
 	void SetRtxSsrc(uint32_t rtx_ssrc);
 
 	uint32_t GetSsrc() const;
 	uint32_t GetRtxSsrc() const;
 	ov::String GetCname() const;
+	ov::String GetContent() const;
 
 	// a=extmap:1 urn:ietf:params:rtp-hdrext:framemarking
 	void AddExtmap(uint8_t id, ov::String attribute);
@@ -146,6 +148,8 @@ private:
 	uint32_t _ssrc = 0;
 	uint32_t _rtx_ssrc = 0;
 	ov::String _cname;
+
+	ov::String _content;
 
 	std::map<uint8_t, ov::String> _extmap;
 

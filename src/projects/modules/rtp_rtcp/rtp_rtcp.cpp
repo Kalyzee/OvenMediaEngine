@@ -259,6 +259,21 @@ void RtpRtcp::DisableTransportCcFeedback(uint32_t ssrc)
 	ssrc_info->transport_cc_feedback_enabled = false;
 }
 
+bool RtpRtcp::SetContentMediaType(uint32_t ssrc, ov::String content)
+{
+	auto ssrc_info = GetSsrcInfo(ssrc);
+	ssrc_info->content = content;
+	auto rtp_frame_jitter_buffers = _rtp_frame_jitter_buffers[ssrc];
+	if (rtp_frame_jitter_buffers != nullptr)
+	{
+		if (ssrc_info->content == "slides")
+		{
+			rtp_frame_jitter_buffers->SetMaxBufferingTime(DEFAULT_VIDEO_SLIDES_MAX_BUFFERING_TIME_MS);
+		}
+	}
+	return true;
+}
+
 // In general, since RTP_RTCP is the first node, there is no previous node. So it will not be called
 bool RtpRtcp::OnDataReceivedFromPrevNode(NodeType from_node, const std::shared_ptr<ov::Data>& data)
 {

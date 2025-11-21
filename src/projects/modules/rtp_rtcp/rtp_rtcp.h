@@ -40,6 +40,7 @@ public:
 	bool IsTransportCcFeedbackEnabled(uint32_t ssrc);
 	bool EnableTransportCcFeedback(uint32_t ssrc, uint8_t extension_id);
 	void DisableTransportCcFeedback(uint32_t ssrc);
+	bool SetContentMediaType(uint32_t ssrc, ov::String content);
 
 	// These functions help the next node to not have to parse the packet again.
 	// Because next node receives raw data format.
@@ -58,6 +59,7 @@ private:
 		uint8_t transport_cc_feedback_extension_id = 0;
 		std::shared_ptr<RtcpSRGenerator> rtcp_sr_generator;
 		std::shared_ptr<RtpReceiveStatistics> receive_statistic;
+		ov::String content;
 	};
 	bool OnRtpReceived(NodeType from_node, const std::shared_ptr<const ov::Data>& data);
 	bool OnRtcpReceived(NodeType from_node, const std::shared_ptr<const ov::Data>& data);

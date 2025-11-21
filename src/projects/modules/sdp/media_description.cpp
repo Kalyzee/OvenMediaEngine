@@ -80,6 +80,11 @@ bool MediaDescription::UpdateData(ov::String &sdp)
 		sdp.AppendFormat("a=msid:%s %s\r\n", _msid.CStr(), _msid_appdata.CStr());
 	}
 
+	if (_content.IsEmpty() == false)
+	{
+		sdp.AppendFormat("a=content:%s\r\n", _content);
+	}
+
 	// Extmap
 	for (const auto &[id, attribute] : _extmap)
 	{
@@ -694,6 +699,21 @@ bool MediaDescription::ParsingMediaLine(char type, std::string content)
 					id,
 					match.GetGroupAt(2).GetValue());
 			}
+			else if (content.compare(0, OV_COUNTOF("content:") - 1, "content:") == 0)
+			{
+				// a=content:slides
+				auto match = SDPRegexPattern::GetInstance()->MatchContent(content.c_str());
+				if (match.GetGroupCount() != 1 + 1)
+				{
+					// Not critical error
+					// parsing_error = true;
+					logw("SDP", "Sdp parsing error : %c=%s", type, content.c_str());
+
+					break;
+				}
+
+				SetContent(match.GetGroupAt(1).GetValue().CStr());
+			}
 			else if (ParsingCommonAttrLine(type, content))
 			{
 			}
@@ -925,6 +945,11 @@ void MediaDescription::SetCname(const ov::String &cname)
 	_cname = cname;
 }
 
+void MediaDescription::SetContent(const ov::String &content)
+{
+	_content = content;
+}
+
 void MediaDescription::SetSsrc(uint32_t ssrc)
 {
 	_ssrc = ssrc;
@@ -948,6 +973,11 @@ uint32_t MediaDescription::GetRtxSsrc() const
 ov::String MediaDescription::GetCname() const
 {
 	return _cname;
+}
+
+ov::String MediaDescription::GetContent() const
+{
+	return _content;
 }
 
 void MediaDescription::AddExtmap(uint8_t id, ov::String attribute)

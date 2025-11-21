@@ -4,8 +4,8 @@
 #include "rtp_packet.h"
 #include <unordered_map>
 
-#define DEFAULT_VIDEO_FIRST_FRAME_MAX_BUFFERING_TIME_MS	1000 
-#define DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS	200	
+#define DEFAULT_VIDEO_SLIDES_MAX_BUFFERING_TIME_MS	1000
+#define DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS	500	
 #define DEFAULT_MARKER_COMPLETION_DELAY_MS	30
 
 // RTP Packet Group by Frame
@@ -73,6 +73,11 @@ public:
 	bool HasAvailableFrame();
 	std::shared_ptr<RtpFrame> PopAvailableFrame();
 
+	void SetMaxBufferingTime(uint32_t default_max_buffering_time_ms)
+	{
+		_default_max_buffering_time_ms = default_max_buffering_time_ms;
+	}
+
 private:	
 	void BurnOutExpiredFrames();
 
@@ -81,6 +86,7 @@ private:
 	uint32_t _last_timestamp = 0;
 	uint32_t _timestamp_cycle = 0;
 	uint64_t _last_extended_timestamp = 0;
+	uint32_t _default_max_buffering_time_ms = DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS;
 
 	bool _first_frame = true;
 
