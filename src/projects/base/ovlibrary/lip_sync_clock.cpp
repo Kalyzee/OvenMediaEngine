@@ -38,7 +38,13 @@ std::optional<uint64_t> LipSyncClock::CalcPTS(uint32_t id, uint32_t rtp_timestam
 	if (clock->_first_pts)
 	{
 		clock->_first_pts = false;
+		clock->_first_packet_time = std::chrono::system_clock::now();
 		clock->_extended_rtp_timestamp = rtp_timestamp;
+		clock->_first_extended_rtp_timestamp = clock->_extended_rtp_timestamp;
+		if (_first_clock == nullptr)
+		{
+			_first_clock = clock;
+		}
 	}
 	else
 	{
@@ -72,25 +78,53 @@ std::optional<uint64_t> LipSyncClock::CalcPTS(uint32_t id, uint32_t rtp_timestam
 
 	std::shared_lock<std::shared_mutex> lock(clock->_clock_lock);
 
-	auto pts = clock->_extended_rtp_timestamp;
+		
+	uint64_t final_pts = 0;
+	if (_first_clock == nullptr)
+	{
+		// can not happen
+		return {};
+	}
+
 	if (clock->_updated)
 	{
-		int64_t diff_rtp_rtcp = ((int64_t)clock->_extended_rtp_timestamp - (int64_t)clock->_extended_rtcp_timestamp);
-		// This is to make pts start at zero.
 		if (!clock->_ready)
 		{
-			clock->_offset_pts = pts - diff_rtp_rtcp;
+			// calculate constant with first RTCP SR
+			clock->_offset_pts = clock->_extended_rtcp_timestamp - clock->_first_extended_rtp_timestamp;
 			clock->_adjust_pts = clock->_pts;
 			clock->_ready= true;
 		}
-
-		// The timestamp difference can be negative.
-		pts = clock->_pts + diff_rtp_rtcp;
+		auto pts = clock->_pts + ((int64_t)clock->_extended_rtp_timestamp - (int64_t)clock->_extended_rtcp_timestamp);
+		final_pts = clock->_offset_pts + pts - clock->_adjust_pts;
+	}
+	else
+	{
+		final_pts = clock->_extended_rtp_timestamp - clock->_first_extended_rtp_timestamp;
 	}
 
-	int64_t final_pts = clock->_offset_pts + pts - clock->_adjust_pts;
+	if (_first_clock != clock)
+	{
+		// delta with the first clock (time between first packet of first clock and first packet of this clock)
+		int64_t delta_ms = 0;
+		if (_first_clock->_ready && clock->_ready)
+		{
+			// use RTCP SR to calculate delta
+			auto start_time = (clock->_adjust_pts - clock->_offset_pts) * clock->_timebase;
+			auto start_time_first_clock = (_first_clock->_adjust_pts - _first_clock->_offset_pts) * _first_clock->_timebase;
+			delta_ms = (start_time - start_time_first_clock) * 1000.0; // to ms
+		}
+		else
+		{
+			// use local time to calculate delta
+			delta_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock->_first_packet_time - _first_clock->_first_packet_time).count();
+		}
+		final_pts += delta_ms / (clock->_timebase * 1000.0);
+	}
 
-	logtd("Calc PTS : id(%u) pts(%lld) final_pts(%lld) last_rtp_timestamp(%u) rtp_timestamp(%u) delta(%u) extended_rtp_timestamp(%llu)", id, pts, final_pts, clock->_last_rtp_timestamp, rtp_timestamp, delta, clock->_extended_rtp_timestamp);
+	// printf("Final PTS : %u %ld %d %d\n", id, final_pts, clock->_ready, clock->_updated);
+
+	logtd("Calc PTS : id(%u) final_pts(%lld) last_rtp_timestamp(%u) rtp_timestamp(%u) delta(%u) extended_rtp_timestamp(%llu)", id, final_pts, clock->_last_rtp_timestamp, rtp_timestamp, delta, clock->_extended_rtp_timestamp);
 
 	return final_pts; 
 }
@@ -109,6 +143,7 @@ bool LipSyncClock::UpdateSenderReportTime(uint32_t id, uint32_t ntp_msw, uint32_
 		return false;
 	}
 
+	printf("RTCP SR : %u %u\n", id, rtcp_timestamp);
 	_enabled = true;
 
 	std::lock_guard<std::shared_mutex> lock(clock->_clock_lock);
@@ -148,8 +183,9 @@ bool LipSyncClock::UpdateSenderReportTime(uint32_t id, uint32_t ntp_msw, uint32_
 		clock->_extended_rtcp_timestamp += delta;
 	}
 
+	auto ntp = ov::Converter::NtpTsToSeconds(ntp_msw, ntp_lsw);
 	clock->_last_rtcp_timestamp = rtcp_timestamp;
-	clock->_pts = ov::Converter::NtpTsToSeconds(ntp_msw, ntp_lsw) / clock->_timebase;
+	clock->_pts = ntp / clock->_timebase;
 
 	logtd("Update SR : id(%u) NTP(%u/%u) pts(%lld) rtp timestamp(%u) extended timestamp (%llu)", 
 			id, ntp_msw, ntp_lsw, clock->_pts, clock->_last_rtcp_timestamp, clock->_extended_rtcp_timestamp);

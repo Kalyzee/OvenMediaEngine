@@ -25,18 +25,21 @@ private:
 		uint64_t	_extended_rtcp_timestamp = 0;
 		uint32_t 	_last_rtp_timestamp = 0;
 		uint64_t	_extended_rtp_timestamp = 0;
+		uint64_t	_first_extended_rtp_timestamp = 0;
 		uint64_t	_pts = 0;	// converted NTP timestamp to timebase timestamp
 		bool _first_pts = true;
+		std::chrono::system_clock::time_point _first_packet_time;
 		bool _first_sr = true;
 		bool _ready = false;
+		uint64_t _offset_pts = 0;
 		uint64_t _adjust_pts = 0;
-		uint64_t	_offset_pts = 0;
 	};
 
 	// Id, Clock
 	std::map<uint32_t, std::shared_ptr<Clock>> _clock_map;
 
 	bool _enabled = false;
+	std::shared_ptr<Clock> _first_clock;
 
 	std::shared_ptr<Clock> GetClock(uint32_t id);
 };
