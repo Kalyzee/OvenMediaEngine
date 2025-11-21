@@ -17,6 +17,7 @@ public:
 private:
 	uint16_t _next_sequence_number = 0;
 	uint32_t _max_buffering_time_ms = DEFAULT_AUDIO_MAX_BUFFERING_TIME_MS;
+	bool _first_packet = true;
 
 	struct RtpPacketBox
 	{

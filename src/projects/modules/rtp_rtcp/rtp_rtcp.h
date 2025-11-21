@@ -64,11 +64,6 @@ private:
 
 	RtpRtcpSscr* GetSsrcInfo(uint32_t ssrc);
 
-	time_t _first_receiver_report_time = 0;	 // 0 - not received RR packet
-	time_t _last_sender_report_time = 0;
-	uint64_t _send_packet_sequence_number = 0;
-
-
 	std::shared_mutex _state_lock;
 	std::shared_ptr<RtpRtcpInterface> _observer;
 	std::shared_ptr<Sdes> _sdes = nullptr;

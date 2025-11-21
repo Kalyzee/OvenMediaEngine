@@ -29,8 +29,9 @@ std::shared_ptr<RtpPacket> RtpMinimalJitterBuffer::PopAvailablePacket()
 	std::shared_ptr<RtpPacketBox> packet_box = nullptr;
 
 	// First packet
-	if(_next_sequence_number == 0)
+	if(_first_packet)
 	{
+		_first_packet = false;
 		auto it = _rtp_packets.begin();
 		if(it == _rtp_packets.end())
 		{

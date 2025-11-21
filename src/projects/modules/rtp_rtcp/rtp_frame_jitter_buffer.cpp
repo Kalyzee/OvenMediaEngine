@@ -232,34 +232,39 @@ bool RtpFrameJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket>& packet
 		frame = it->second;
 	}
 
-	frame->InsertPacket(packet);
-
-	return true;
+	return frame->InsertPacket(packet);;
 }
 
 void RtpFrameJitterBuffer::BurnOutExpiredFrames()
 {
-	for (auto it = _rtp_frames.begin(); it != _rtp_frames.end();)
+	// printf("Check - BurnOutExpiredFrames : %d\n", _rtp_frames.size());
+	while (true)
 	{
+		auto it = _rtp_frames.begin();
+		if (it == _rtp_frames.end())
+		{
+			break;
+		}
 		auto extended_timestamp = it->first;
 		auto frame = it->second;
 		const uint64_t age = frame->GetElapsed();
 
 		if (frame->IsCompleted())
 		{
-			++it;
-			continue;
+			break;
 		}
+
 		auto max_buffering_time_ms = frame->GetMaxBufferingTime();
 		if (max_buffering_time_ms > 0 && age > max_buffering_time_ms)
 		{
 			logtw("Dropping expired frame - timestamp(%u) age(%llu ms)", frame->Timestamp(), age);
 			_last_extended_timestamp = extended_timestamp;
-			it = _rtp_frames.erase(it);
+			_rtp_frames.erase(it);
 		}
-		else
+		else 
 		{
-			++it;
+			// waiting next packet
+			break;
 		}
 	}
 }
