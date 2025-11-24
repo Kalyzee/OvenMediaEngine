@@ -339,8 +339,6 @@ namespace pvd
 
 		if (_rtp_timestamp_method == RtpTimestampCalculationMethod::WITH_RTCP_SR)
 		{
-			auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-			printf("NOW : %ld  - ", now);
 			auto pts_base = _rtp_lip_sync_clock.CalcPTS(track_id, timestamp);
 			if (pts_base.has_value() == false)
 			{
@@ -348,7 +346,6 @@ namespace pvd
 			}
 
 			int64_t pts = pts_base.value();
-			printf("PTS : %u %u %ld\n", track_id, timestamp, pts);
 			adjusted_timestamp = AdjustTimestampByBase(track_id, pts, pts, max_timestamp);
 		}
 		else if (_rtp_timestamp_method == RtpTimestampCalculationMethod::SINGLE_DELTA)

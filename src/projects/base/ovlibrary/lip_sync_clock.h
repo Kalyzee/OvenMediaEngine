@@ -18,6 +18,13 @@ public:
 private:
 	struct Clock
 	{
+		enum class OffsetState
+    {
+        NOT_CALCULATED,
+        TEMPORARY_VALUE,
+        FINAL_VALUE,
+    };
+
 		std::shared_mutex _clock_lock;
 		bool		_updated = false;
 		double		_timebase = 0;
@@ -28,11 +35,13 @@ private:
 		uint64_t	_first_extended_rtp_timestamp = 0;
 		uint64_t	_pts = 0;	// converted NTP timestamp to timebase timestamp
 		bool _first_pts = true;
-		std::chrono::system_clock::time_point _first_packet_time;
 		bool _first_sr = true;
+		std::chrono::system_clock::time_point _first_packet_time;
 		bool _ready = false;
-		uint64_t _offset_pts = 0;
 		uint64_t _adjust_pts = 0;
+		int64_t _offset_pts = 0; // offset with the first clock
+		OffsetState _offset_state = OffsetState::NOT_CALCULATED;
+
 	};
 
 	// Id, Clock
