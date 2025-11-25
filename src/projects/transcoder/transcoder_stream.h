@@ -221,6 +221,7 @@ private:
 	std::shared_ptr<MediaTrack> GetInputTrackOfFilter(MediaTrackId decoder_id);
 
 	int32_t CreateEncoders(MediaFrame *buffer);
+	bool DestroyEncoder(MediaTrackId encoder_id);
 	bool CreateEncoder(MediaTrackId encoder_id, std::shared_ptr<info::Stream> output_stream, std::shared_ptr<MediaTrack> output_track);
 
 	// Step 1: Decode (Decode a frame from given packets)

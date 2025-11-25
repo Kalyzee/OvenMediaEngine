@@ -666,6 +666,23 @@ void TranscoderStreamInternal::UpdateOutputTrackTranscode(const std::shared_ptr<
 	{
 		float aspect_ratio = (float)buffer->GetWidth() / (float)buffer->GetHeight();
 
+		if (output_track->GetCodecId() == cmn::MediaCodecId::Jpeg || output_track->GetCodecId() == cmn::MediaCodecId::Png)
+		{
+			float output_aspect_ratio = 0;
+			if (output_track->GetHeight() != 0)
+			{
+				output_aspect_ratio = (float)output_track->GetWidth() / (float)output_track->GetHeight();
+			}
+
+			if (output_aspect_ratio != 0 && output_aspect_ratio != aspect_ratio)
+			{
+				// Reset resolution conf
+				output_track->SetWidth(output_track->GetWidthByConfig());
+				output_track->SetHeight(output_track->GetHeightByConfig());
+				output_track->SetRecreateEncoderFlag(true);
+			}
+		}
+
 		// Keep the original video resolution
 		if (output_track->GetWidth() == 0 && output_track->GetHeight() == 0)
 		{

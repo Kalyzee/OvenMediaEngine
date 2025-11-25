@@ -248,6 +248,16 @@ void MediaTrack::SetDecoderConfigurationRecord(const std::shared_ptr<DecoderConf
 	_decoder_configuration_record = dcr;
 }
 
+bool MediaTrack::GetRecreateEncoderFlag() const
+{
+	return _recreate_encoder;
+}
+
+void MediaTrack::SetRecreateEncoderFlag(bool recreate) 
+{
+	_recreate_encoder = recreate;
+}
+
 ov::String MediaTrack::GetCodecsParameter() const
 {
 	switch (GetCodecId())

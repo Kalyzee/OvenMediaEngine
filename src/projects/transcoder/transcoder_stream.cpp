@@ -858,7 +858,12 @@ int32_t TranscoderStream::CreateEncoders(MediaFrame *buffer)
 		for (auto &[output_stream, output_track_id] : output_tracks)
 		{
 			auto output_track = output_stream->GetTrack(output_track_id);
-
+			if (output_track->GetRecreateEncoderFlag())
+			{
+				output_track->SetRecreateEncoderFlag(false);
+				// destroy for recreate encoder
+				DestroyEncoder(encoder_id);
+			}
 			if (CreateEncoder(encoder_id, output_stream, output_track) == false)
 			{
 				logte("[%s/%s(%u)] Could not create encoder. Encoder(%d), OutputTrack(%d)", _application_info.GetVHostAppName().CStr(), _input_stream->GetName().CStr(), _input_stream->GetId(), encoder_id, output_track->GetId());
@@ -886,6 +891,25 @@ int32_t TranscoderStream::CreateEncoders(MediaFrame *buffer)
 
 	return created;
 }
+
+bool TranscoderStream::DestroyEncoder(MediaTrackId encoder_id)
+{
+	std::lock_guard<std::shared_mutex> encoder_lock(_encoder_map_mutex);
+
+	auto it = _encoders.find(encoder_id);
+	if (it == _encoders.end())
+	{
+		return false;
+	}
+
+	auto encoder = it->second;
+	encoder->Stop();
+	encoder.reset();
+	_encoders.erase(it);
+	
+	return true;
+}
+
 
 bool TranscoderStream::CreateEncoder(MediaTrackId encoder_id, std::shared_ptr<info::Stream> output_stream, std::shared_ptr<MediaTrack> output_track)
 {

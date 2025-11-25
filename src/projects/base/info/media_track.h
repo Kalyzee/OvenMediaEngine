@@ -125,6 +125,10 @@ public:
 
 	ov::String GetInfoString();
 
+	// Encoder
+	bool GetRecreateEncoderFlag() const;
+	void SetRecreateEncoderFlag(bool recreate);
+
 protected: 
 
 	// Track ID
@@ -138,6 +142,9 @@ protected:
 	cmn::MediaCodecModuleId _codec_module_id;
 	int32_t _codec_device_id;
 	ov::String _codec_modules;
+
+	// Encoder
+	bool _recreate_encoder = false;
 
 	// Variant Name : Original encoder profile that made this track 
 	// from <OutputProfile><Encodes>(<Video> || <Audio> || <Image>)<Name>
