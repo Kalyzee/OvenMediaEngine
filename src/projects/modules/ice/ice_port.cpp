@@ -293,6 +293,26 @@ bool IcePort::AddIceSession(const ov::SocketAddressPair &address_pair, const std
 	return false;
 }
 
+bool IcePort::RemoveIceSession(const ov::SocketAddressPair &address_pair, const std::shared_ptr<IceSession> &ice_session)
+{
+	std::lock_guard<std::shared_mutex> lock_guard(_ice_sessions_with_address_pair_lock);
+	auto item = _ice_sessions_with_address_pair.find(address_pair);
+	if (item == _ice_sessions_with_address_pair.end())
+	{
+		return false;
+	}
+
+	// Defensive : only remove if the entry still maps to the given session, so we never drop
+	// another session's mapping.
+	if (ice_session != nullptr && item->second != ice_session)
+	{
+		return false;
+	}
+
+	_ice_sessions_with_address_pair.erase(item);
+	return true;
+}
+
 std::shared_ptr<IceSession> IcePort::FindIceSession(session_id_t session_id)
 {
 	std::shared_lock<std::shared_mutex> lock_guard(_ice_sessions_with_address_pair_lock);
@@ -829,9 +849,11 @@ void IcePort::OnStunPacketReceived(const std::shared_ptr<ov::Socket> &remote, co
 
 bool IcePort::UseCandidate(const std::shared_ptr<IceSession> &ice_session, const ov::SocketAddressPair &address_pair)
 {
-	if (ice_session->GetState() == IceConnectionState::Connected && ice_session->GetConnectedCandidatePair()->GetAddressPair() == address_pair)
+	auto previous_candidate_pair = ice_session->GetConnectedCandidatePair();
+
+	if (ice_session->GetState() == IceConnectionState::Connected && previous_candidate_pair != nullptr && previous_candidate_pair->GetAddressPair() == address_pair)
 	{
-		// Already connected
+		// Already connected on this candidate pair
 		return true;
 	}
 
@@ -841,7 +863,18 @@ bool IcePort::UseCandidate(const std::shared_ptr<IceSession> &ice_session, const
 	}
 
 	logti("Session %u uses candidate: %s", ice_session->GetSessionID(), address_pair.ToString().CStr());
+
+	// Register the (new) connected path so that incoming application/TURN packets from this
+	// address are routed to this session.
 	AddIceSession(address_pair, ice_session);
+
+	// On path migration, drop the previous path mapping so that the old (now dead) address no
+	// longer resolves to this session, and so it does not keep the session referenced after
+	// RemoveSession() - which only erases the currently connected candidate pair's address.
+	if (previous_candidate_pair != nullptr && previous_candidate_pair->GetAddressPair() != address_pair)
+	{
+		RemoveIceSession(previous_candidate_pair->GetAddressPair(), ice_session);
+	}
 
 	return true;
 }

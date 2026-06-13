@@ -148,6 +148,10 @@ private:
 	bool AddIceSession(const ov::String &local_ufrag, const std::shared_ptr<IceSession> &ice_session);
 	bool AddIceSession(const ov::SocketAddressPair &pair, const std::shared_ptr<IceSession> &ice_session);
 
+	// Remove an IceSession entry from the address-pair map only (used on path migration to
+	// drop the previous, now-dead path). Erases only if the entry still maps to ice_session.
+	bool RemoveIceSession(const ov::SocketAddressPair &pair, const std::shared_ptr<IceSession> &ice_session);
+
 	// Get IceSession
 	std::shared_ptr<IceSession> FindIceSession(session_id_t session_id);
 	std::shared_ptr<IceSession> FindIceSession(const ov::String &local_ufrag);
