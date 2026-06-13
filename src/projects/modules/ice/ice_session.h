@@ -8,6 +8,8 @@
 //==============================================================================
 #pragma once
 
+#include <atomic>
+
 #include <base/ovlibrary/ovlibrary.h>
 
 #include "ice_port_observer.h"
@@ -101,8 +103,10 @@ private:
 	
 	Role _role = Role::UNDEFINED;
 
-	// Global state among all candidate pairs
-    IceConnectionState _state = IceConnectionState::New;
+	// Global state among all candidate pairs.
+	// Atomic because it is read/written from both the ICE receive thread and the timer thread
+	// (CheckTimedOut / DisconnectSession).
+    std::atomic<IceConnectionState> _state { IceConnectionState::New };
 
     // Candidate pairs
 	mutable std::shared_mutex _connected_candidate_pair_mutex;

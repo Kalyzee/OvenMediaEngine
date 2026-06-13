@@ -28,14 +28,15 @@ IceSession::IceSession(session_id_t session_id, IceSession::Role role,
 
 ov::String IceSession::ToString() const
 {
+	auto connected_candidate_pair = GetConnectedCandidatePair();
 	return ov::String::FormatString("IceSession: session_id=%u, role=%s, state=%s, local_ufrag=%s, expire_after_ms=%d, lifetime_epoch_ms=%llu, ConnectedCandidatePair=%s",
-		_session_id, 
+		_session_id,
 		_role == Role::CONTROLLED ? "CONTROLLED" : "CONTROLLING",
-		IceConnectionStateToString(_state),
+		IceConnectionStateToString(GetState()),
 		GetLocalUfrag().CStr(),
 		_expire_after_ms,
-		_lifetime_epoch_ms, 
-		_connected_candidate_pair ? _connected_candidate_pair->ToString().CStr() : "None");
+		_lifetime_epoch_ms,
+		connected_candidate_pair ? connected_candidate_pair->ToString().CStr() : "None");
 }
 
 void IceSession::Refresh()
