@@ -9,6 +9,8 @@
 #include "ice_session.h"
 #include "ice_private.h"
 
+#include <limits>
+
 // Minimum delay between two path migrations (re-nominations while already Connected).
 // This prevents flapping between candidate pairs, e.g. when the peer aggressively
 // nominates several pairs in a short time during the initial connection.
@@ -42,6 +44,35 @@ ov::String IceSession::ToString() const
 void IceSession::Refresh()
 {
 	_expire_time = std::chrono::system_clock::now() + std::chrono::milliseconds(_expire_after_ms);
+	// Any valid inbound activity (media, STUN request/response) is proof the path is alive.
+	_last_received_ms = static_cast<int64_t>(ov::Clock::NowMSec());
+}
+
+int64_t IceSession::GetElapsedMsSinceLastReceived() const
+{
+	auto last = _last_received_ms.load();
+	if (last == 0)
+	{
+		// No activity recorded yet.
+		return 0;
+	}
+	return static_cast<int64_t>(ov::Clock::NowMSec()) - last;
+}
+
+int64_t IceSession::GetElapsedMsSinceLastConsentRequest() const
+{
+	auto last = _last_consent_request_ms.load();
+	if (last == 0)
+	{
+		// Never sent a consent request yet : allow one immediately.
+		return std::numeric_limits<int64_t>::max();
+	}
+	return static_cast<int64_t>(ov::Clock::NowMSec()) - last;
+}
+
+void IceSession::MarkConsentRequestSent()
+{
+	_last_consent_request_ms = static_cast<int64_t>(ov::Clock::NowMSec());
 }
 
 bool IceSession::IsExpired() const

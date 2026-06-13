@@ -34,6 +34,13 @@ public:
 	void Refresh();
     bool IsExpired() const;
 
+	// Consent freshness (RFC 7675 style) on the connected path.
+	// Refresh() stamps the last-received time; these helpers expose elapsed times so the
+	// IcePort timer can probe an idle connected path and tear down a dead one.
+	int64_t GetElapsedMsSinceLastReceived() const;
+	int64_t GetElapsedMsSinceLastConsentRequest() const;
+	void MarkConsentRequestSent();
+
 	// State management
 	void SetState(IceConnectionState state);
 	IceConnectionState GetState() const;
@@ -121,6 +128,11 @@ private:
 	std::chrono::time_point<std::chrono::system_clock> _expire_time;
 	const int _expire_after_ms;
 	const uint64_t _lifetime_epoch_ms;
+
+	// Consent freshness timestamps (epoch ms). Atomic: written from the ICE receive thread,
+	// read from the timer thread (CheckTimedOut).
+	std::atomic<int64_t> _last_received_ms { 0 };
+	std::atomic<int64_t> _last_consent_request_ms { 0 };
 
     // interfaces
     std::any _user_data;

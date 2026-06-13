@@ -499,6 +499,20 @@ bool IcePort::RemoveTransaction(const ov::String &transaction_id)
 	return true;
 }
 
+// Consent freshness (RFC 7675 style) on the connected path.
+// - When a connected, non-TURN path has been idle (no inbound media nor STUN) for longer than
+//   ICE_CONSENT_CHECK_INTERVAL_MS, OME sends a STUN binding request to it. A valid response
+//   refreshes the session (OnReceivedStunBindingResponse() calls Refresh()).
+// - If no inbound activity at all is seen for ICE_CONSENT_TIMEOUT_MS, the path is considered
+//   dead and the session is disconnected (the peer can then reconnect).
+// Detection is time-based (not a missed-response counter) so it tolerates packet loss: any
+// inbound packet resets the timer, and in a live call media flows continuously.
+// ICE_CONSENT_TIMEOUT_MS is intentionally well below the passive session timeout (default 30s)
+// to recover faster, while staying far above any realistic media gap. Tune it up on extremely
+// lossy networks.
+static constexpr int64_t ICE_CONSENT_CHECK_INTERVAL_MS = 5000;
+static constexpr int64_t ICE_CONSENT_TIMEOUT_MS = 15000;
+
 void IcePort::CheckTimedOut()
 {
 	// Remove expired transction items
@@ -553,6 +567,66 @@ void IcePort::CheckTimedOut()
 		}
 
 		NotifyIceSessionStateChanged(terminated_session);
+	}
+
+	// Consent freshness : probe idle connected paths and detect dead ones.
+	std::vector<std::shared_ptr<IceSession>> consent_check_list;
+	std::vector<std::shared_ptr<IceSession>> consent_lost_list;
+	{
+		std::shared_lock<std::shared_mutex> lock_guard(_ice_sessions_with_id_lock);
+
+		for (const auto &item : _ice_seesions_with_id)
+		{
+			auto session = item.second;
+
+			// Only connected, direct (non-TURN) sessions. TURN-relayed sessions use a
+			// different send path, so we leave them to the passive expiry.
+			if (session->GetState() != IceConnectionState::Connected || session->IsTurnClient())
+			{
+				continue;
+			}
+
+			auto idle_ms = session->GetElapsedMsSinceLastReceived();
+			if (idle_ms > ICE_CONSENT_TIMEOUT_MS)
+			{
+				consent_lost_list.push_back(session);
+			}
+			else if (idle_ms > ICE_CONSENT_CHECK_INTERVAL_MS && session->GetElapsedMsSinceLastConsentRequest() > ICE_CONSENT_CHECK_INTERVAL_MS)
+			{
+				consent_check_list.push_back(session);
+			}
+		}
+	}
+
+	// Dead paths : disconnect so they are torn down on the next pass (peer can reconnect).
+	for (auto &session : consent_lost_list)
+	{
+		logtw("ICE session %u : consent lost (no activity on the connected path for %lld ms), disconnecting",
+			  session->GetSessionID(), static_cast<long long>(session->GetElapsedMsSinceLastReceived()));
+		session->SetState(IceConnectionState::Disconnecting);
+	}
+
+	// Idle-but-not-yet-dead paths : send a STUN binding request to confirm liveness.
+	for (auto &session : consent_check_list)
+	{
+		auto connected_candidate_pair = session->GetConnectedCandidatePair();
+		if (connected_candidate_pair == nullptr)
+		{
+			continue;
+		}
+
+		auto remote = connected_candidate_pair->GetSocket();
+		if (remote == nullptr)
+		{
+			continue;
+		}
+
+		GateInfo gate_info;
+		gate_info.input_method = GateInfo::GateType::DIRECT;
+		gate_info.packet_type = IcePacketIdentifier::PacketType::STUN;
+
+		session->MarkConsentRequestSent();
+		SendStunBindingRequest(remote, connected_candidate_pair->GetAddressPair(), gate_info, session);
 	}
 }
 
