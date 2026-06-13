@@ -9,6 +9,11 @@
 #include "ice_session.h"
 #include "ice_private.h"
 
+// Minimum delay between two path migrations (re-nominations while already Connected).
+// This prevents flapping between candidate pairs, e.g. when the peer aggressively
+// nominates several pairs in a short time during the initial connection.
+static constexpr uint64_t ICE_PATH_MIGRATION_MIN_INTERVAL_MS = 1000;
+
 IceSession::IceSession(session_id_t session_id, IceSession::Role role, 
 				const std::shared_ptr<const SessionDescription> &local_sdp, const std::shared_ptr<const SessionDescription> &peer_sdp,
 				int expired_ms, uint64_t life_time_epoch_ms, 
@@ -299,6 +304,17 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair)
 
 	if (state == IceConnectionState::Connected)
 	{
+		// Anti-flap : do not migrate too often. This also avoids bouncing between
+		// candidate pairs during the initial connection, when the peer may nominate
+		// several pairs in a very short time.
+		auto elapsed_ms = ov::Clock::GetElapsedMiliSecondsFromNow(_last_connected_pair_changed_time);
+		if (elapsed_ms < ICE_PATH_MIGRATION_MIN_INTERVAL_MS)
+		{
+			logtd("ICE session : %u | Skip path migration to %s (only %llu ms since last candidate pair change)",
+				  GetSessionID(), address_pair.ToString().CStr(), elapsed_ms);
+			return false;
+		}
+
 		// Path migration : the peer nominated a different candidate pair while we were already connected.
 		logti("ICE session : %u | Path migration : %s -> %s",
 			  GetSessionID(),
@@ -309,6 +325,7 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair)
 	// candidate state
 	candidate_pair->SetState(IceConnectionState::Connected);
 	_connected_candidate_pair = candidate_pair;
+	_last_connected_pair_changed_time = std::chrono::system_clock::now();
 
 	// Global state
 	SetState(IceConnectionState::Connected);

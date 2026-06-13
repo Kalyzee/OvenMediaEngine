@@ -107,6 +107,9 @@ private:
     // Candidate pairs
 	mutable std::shared_mutex _connected_candidate_pair_mutex;
     std::shared_ptr<IceCandidatePair> _connected_candidate_pair;
+	// Last time the connected candidate pair was (re)nominated. Used for anti-flap
+	// throttling of path migration. Guarded by _connected_candidate_pair_mutex.
+	std::chrono::time_point<std::chrono::system_clock> _last_connected_pair_changed_time;
 
 	mutable std::shared_mutex _candidate_pairs_mutex;
     std::map<ov::SocketAddressPair, std::shared_ptr<IceCandidatePair>> _candidate_pairs;
