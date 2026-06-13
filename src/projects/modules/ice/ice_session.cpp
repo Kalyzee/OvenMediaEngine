@@ -271,10 +271,16 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair)
 {
 	std::lock_guard<std::shared_mutex> lock(_connected_candidate_pair_mutex);
 
-	// TODO(Getroot) : Consider the case where the ICE restart occurs
-	if (GetState() != IceConnectionState::Checking)
+	auto state = GetState();
+
+	// The peer can nominate a candidate pair during the initial connection (Checking),
+	// but also while we are already Connected. The latter happens when the peer's network
+	// path changes (e.g. switching Wi-Fi/4G) and it re-nominates a new candidate pair with
+	// the same ICE credentials. In that case we must migrate to the new path instead of
+	// staying pinned to the now-dead old path.
+	if (state != IceConnectionState::Checking && state != IceConnectionState::Connected)
 	{
-		logte("ICE session : %u | UseCandidate() | Invalid state: %s", GetSessionID(), IceConnectionStateToString(GetState()));
+		logte("ICE session : %u | UseCandidate() | Invalid state: %s", GetSessionID(), IceConnectionStateToString(state));
 		return false;
 	}
 
@@ -283,6 +289,21 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair)
 	{
 		logte("ICE session : %u | UseCandidate() | No candidate pair found for address pair: %s", GetSessionID(), address_pair.ToString().CStr());
 		return false;
+	}
+
+	// Already nominated to the same candidate pair : nothing to do.
+	if (_connected_candidate_pair != nullptr && _connected_candidate_pair->GetAddressPair() == address_pair)
+	{
+		return true;
+	}
+
+	if (state == IceConnectionState::Connected)
+	{
+		// Path migration : the peer nominated a different candidate pair while we were already connected.
+		logti("ICE session : %u | Path migration : %s -> %s",
+			  GetSessionID(),
+			  _connected_candidate_pair != nullptr ? _connected_candidate_pair->GetAddressPair().ToString().CStr() : "None",
+			  address_pair.ToString().CStr());
 	}
 
 	// candidate state
