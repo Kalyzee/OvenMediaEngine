@@ -931,7 +931,13 @@ bool IcePort::OnReceivedStunBindingRequest(const std::shared_ptr<ov::Socket> &re
 		SendStunMessage(remote, address_pair, gate_info, response_message, ice_session->GetLocalSdp()->GetIcePwd().ToData(false));
 	}
 
-	// Already connected, we don't send stun binding request to another peer address
+	// If we are already connected, this binding request comes either from the current
+	// (still-validated) path, or from an alternate path that the peer keeps probing /
+	// nominating - typically after a network change. The success response was already sent
+	// above. We also send a triggered binding request back, so the alternate candidate pair
+	// gets validated (request + response) and is ready to be promoted by a later
+	// USE-CANDIDATE (path migration). The integrity of the incoming request was already
+	// verified above, so replying to a different address is not an amplification vector.
 	if (ice_session->GetState() == IceConnectionState::Connected)
 	{
 		auto connected_candidate_pair = ice_session->GetConnectedCandidatePair();
@@ -944,9 +950,8 @@ bool IcePort::OnReceivedStunBindingRequest(const std::shared_ptr<ov::Socket> &re
 
 		if (connected_candidate_pair->GetAddressPair() != address_pair)
 		{
-			logtd("Already connected with another address : Connected(%s) Bind Request(%s)", connected_candidate_pair->GetAddressPair().ToString().CStr(), address_pair.ToString().CStr());
-			// Didn't respond
-			return true;
+			logtd("Connected on another path, validating alternate path : Connected(%s) Bind Request(%s)",
+				  connected_candidate_pair->GetAddressPair().ToString().CStr(), address_pair.ToString().CStr());
 		}
 	}
 
