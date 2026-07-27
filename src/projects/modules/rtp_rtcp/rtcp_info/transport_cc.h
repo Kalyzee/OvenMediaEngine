@@ -41,7 +41,9 @@ public:
 	{
 		// constructor
 		PacketFeedbackInfo() = default;
-		PacketFeedbackInfo(uint16_t sequence_number, bool received, uint32_t received_time = 0)
+		// received_time must be int64_t: in microseconds a uint32_t would overflow after
+		// roughly 71 minutes of session and produce a burst of nonsensical deltas.
+		PacketFeedbackInfo(uint16_t sequence_number, bool received, int64_t received_time = 0)
 			: _wide_sequence_number(sequence_number),
 			_received(received),
 			_received_time_us(received_time)
@@ -50,7 +52,7 @@ public:
 
 		uint16_t _wide_sequence_number = 0;
 		bool _received = false;
-		int64_t _received_time_us = 0;  // absolute time. multiple of 64us (same reference point as the reference_time_us)
+		int64_t _received_time_us = 0;  // microseconds, same reference point as _reference_time_us
 		bool _calculated = false;
 		uint8_t _delta_size = 0; // 0, 1, 2, 3
 		int32_t _received_delta = 0;	// 1/4000 scale
@@ -123,7 +125,8 @@ public:
 	}
 	void SetReferenceTimeUs(int64_t reference_time_us)
 	{
-		_reference_time = reference_time_us / 1000;
+		// The wire field is expressed in multiples of 64ms (see _reference_time)
+		_reference_time = reference_time_us / 64000;
 		_reference_time_us = reference_time_us;
 	}
 	void SetFeedbackPacketCount(uint8_t fb_packet_count)

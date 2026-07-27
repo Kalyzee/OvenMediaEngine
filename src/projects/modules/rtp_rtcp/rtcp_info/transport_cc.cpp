@@ -400,8 +400,12 @@ bool TransportCc::CalculeDeltas()
 		{
 			if (last_packet == nullptr)
 			{
-				// use reference_time because is first packet
-				delta_us = info->_received_time_us - _reference_time_us;
+				// Use reference_time because is first packet.
+				// It must be the *truncated* reference time (the 64ms-resolution value actually
+				// written on the wire), not _reference_time_us: the receiver rebuilds absolute
+				// arrival times from that field, so charging the truncation remainder (up to
+				// 64ms) to the first delta is what keeps both sides consistent.
+				delta_us = info->_received_time_us - (static_cast<int64_t>(_reference_time) * 64000);
 			}
 			else
 			{
@@ -412,7 +416,7 @@ bool TransportCc::CalculeDeltas()
 
 		if (delta_us < 0)
 		{
-			logtw("delta is negative : %d", delta_us);
+			logtw("delta is negative : %" PRId64, delta_us);
 		}
 
 		int64_t delta = delta_us / 250;	 // to multiple of 250 microseconds

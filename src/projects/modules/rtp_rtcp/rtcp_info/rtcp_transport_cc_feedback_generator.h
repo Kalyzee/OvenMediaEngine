@@ -65,9 +65,13 @@ public:
 	bool StopCurrentTransportCc();
 	std::shared_ptr<RtcpPacket> GenerateTransportCcMessage(std::shared_ptr<TransportCc> transport_cc);
 
-	int64_t GetTime(std::chrono::_V2::system_clock::time_point time) const
+	// Elapsed microseconds since the generator was created. This is the single reference point
+	// shared by TransportCc::_reference_time_us and PacketFeedbackInfo::_received_time_us.
+	// It must stay in plain microseconds: the wire encoding divides by 250us (recv deltas) and
+	// by 64000us (reference time), and those conversions are done by TransportCc itself.
+	int64_t GetTime(std::chrono::system_clock::time_point time) const
 	{
-		return std::chrono::duration_cast<std::chrono::microseconds>(time - _created_time).count() / 64;
+		return std::chrono::duration_cast<std::chrono::microseconds>(time - _created_time).count();
 	}
 
 private:
