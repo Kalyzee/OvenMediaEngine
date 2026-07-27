@@ -7,6 +7,8 @@
 //
 //==============================================================================
 #pragma once
+#include <atomic>
+#include <mutex>
 #include <unordered_set>
 #include <monitoring/monitoring.h>
 #include <modules/http/server/web_socket/web_socket_session.h>
@@ -115,7 +117,11 @@ private:
 	uint8_t GetOriginPayloadTypeFromRedRtpPacket(const std::shared_ptr<const RedRtpPacket> &red_rtp_packet);
 
 	void ChangeRendition();
-	
+
+	// Resend the tail of the current GOP (last keyframe and every packet stored after it)
+	// so a viewer enabling video does not have to wait for the next keyframe
+	void SendVideoCatchUp();
+
 	bool SendPlaylistInfo(const std::shared_ptr<const RtcPlaylist> &playlist) const;
 	bool SendRenditionChanged(const std::shared_ptr<const RtcRendition> &rendition) const;
 	bool SendSessionChanged() const;
@@ -157,9 +163,22 @@ private:
 	std::shared_ptr<const RtcRendition>	_next_rendition = nullptr;
 	std::shared_mutex					_change_rendition_lock;
 
+	// Serializes sequence number allocation and packet sending between the live path
+	// (SendOutgoingData) and the catch-up path (SendVideoCatchUp)
+	std::mutex _send_lock;
+
 	uint16_t _video_rtp_sequence_number = 0;
 	uint16_t _audio_rtp_sequence_number = 0;
 	uint16_t _wide_sequence_number = 0;
+
+	// After a catch-up, video packets already resent from the history may still arrive
+	// through the live path: they are dropped until the live path passes this sequence number
+	bool _catchup_dedup_active = false;
+	uint16_t _catchup_last_origin_seq = 0;
+
+	// A new viewer is aligned on the current GOP once, as soon as the DTLS handshake
+	// completes (before that, SRTP has no key and would drop the resent packets)
+	std::atomic<bool> _initial_catchup_pending{true};
 
 	bool _video_enabled = true;
 	bool _audio_enabled = true;

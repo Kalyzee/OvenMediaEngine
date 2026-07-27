@@ -371,8 +371,106 @@ bool RtcSession::EnableVideo(bool enable)
 	_video_enabled = enable;
 	if (updated) {
 		SendSessionChanged();
+		if (_video_enabled)
+		{
+			SendVideoCatchUp();
+		}
 	}
 	return true;
+}
+
+void RtcSession::SendVideoCatchUp()
+{
+	if (_video_enabled == false)
+	{
+		return;
+	}
+
+	// The history only exists when RTX is enabled
+	if (_rtx_enabled == false)
+	{
+		return;
+	}
+
+	// With RED, this session sends RED-wrapped packets: the raw packets stored in the
+	// history could not be interpreted by the viewer
+	if (_red_enabled == true)
+	{
+		return;
+	}
+
+	auto stream = std::static_pointer_cast<RtcStream>(GetStream());
+	if (stream == nullptr)
+	{
+		return;
+	}
+
+	// Only the video track of the rendition this session is playing
+	std::shared_lock<std::shared_mutex> rendition_lock(_change_rendition_lock);
+	auto rendition = _current_rendition;
+	rendition_lock.unlock();
+	if (rendition == nullptr)
+	{
+		return;
+	}
+
+	auto video_track = rendition->GetVideoTrack();
+	if (video_track == nullptr)
+	{
+		return;
+	}
+
+	auto history = stream->GetHistory(video_track->GetId(), PayloadTypeFromCodecId(video_track->GetCodecId()));
+	if (history == nullptr)
+	{
+		return;
+	}
+
+	uint16_t first_seq_no = 0;
+	uint16_t last_seq_no = 0;
+	if (history->GetCatchUpRange(first_seq_no, last_seq_no) == false)
+	{
+		logtd("Video catch-up skipped : no keyframe available in the history");
+		return;
+	}
+
+	// Collect the whole range before sending anything: a GOP with missing packets is
+	// not decodable, so abort if any packet has been overwritten in the history
+	std::vector<std::shared_ptr<RtpPacket>> packets;
+	packets.reserve(static_cast<uint16_t>(last_seq_no - first_seq_no) + 1);
+	for (uint16_t seq_no = first_seq_no; seq_no != static_cast<uint16_t>(last_seq_no + 1); seq_no++)
+	{
+		auto rtp_packet = history->GetRtpPacket(seq_no);
+		if (rtp_packet == nullptr)
+		{
+			logtd("Video catch-up aborted : packet(%u) is no longer in the history", seq_no);
+			return;
+		}
+		packets.push_back(rtp_packet);
+	}
+
+	std::lock_guard<std::mutex> send_lock(_send_lock);
+	for (const auto &rtp_packet : packets)
+	{
+		auto copy_packet = std::make_shared<RtpPacket>(*rtp_packet);
+		copy_packet->SetSequenceNumber(_video_rtp_sequence_number++);
+		SetTransportWideSequenceNumber(copy_packet, _wide_sequence_number);
+		SetAbsSendTime(copy_packet, ov::Clock::NowMSec());
+
+		_rtp_rtcp->SendRtpPacket(copy_packet);
+
+		RecordRtpSent(copy_packet, rtp_packet->SequenceNumber(), _wide_sequence_number);
+		_wide_sequence_number++;
+
+		MonitorInstance->IncreaseBytesOut(*GetStream(), PublisherType::Webrtc, copy_packet->GetData()->GetLength());
+	}
+
+	// Packets up to last_seq_no were stored in the history before the catch-up but may
+	// not have been delivered to this session yet: drop them when they arrive live
+	_catchup_last_origin_seq = last_seq_no;
+	_catchup_dedup_active = true;
+
+	logti("Video catch-up : %zu packets resent (origin seq %u-%u)", packets.size(), first_seq_no, last_seq_no);
 }
 
 bool RtcSession::VideoIsEnabled()
@@ -580,6 +678,18 @@ void RtcSession::SendOutgoingData(const std::any &packet)
 		return;
 	}
 
+	// Align the new viewer on the current GOP as soon as the session is able to send.
+	// Before the DTLS handshake completes, SRTP has no key and would drop the packets.
+	// Must stay before _send_lock is taken: SendVideoCatchUp() takes it itself.
+	if (_initial_catchup_pending.load(std::memory_order_relaxed) &&
+		_dtls_transport != nullptr && _dtls_transport->IsConnected())
+	{
+		if (_initial_catchup_pending.exchange(false))
+		{
+			SendVideoCatchUp();
+		}
+	}
+
 	std::shared_ptr<RtpPacket> session_packet;
 
 	try 
@@ -605,8 +715,21 @@ void RtcSession::SendOutgoingData(const std::any &packet)
 	// RTP Session must be copied and sent because data is altered due to SRTP.
 	auto copy_packet = std::make_shared<RtpPacket>(*session_packet);
 
+	std::lock_guard<std::mutex> send_lock(_send_lock);
+
 	if (copy_packet->IsVideoPacket())
 	{
+		// Drop video packets already resent by a catch-up (stored in the history before
+		// the catch-up but delivered through the live path after it)
+		if (_catchup_dedup_active)
+		{
+			if (static_cast<int16_t>(session_packet->SequenceNumber() - _catchup_last_origin_seq) <= 0)
+			{
+				return;
+			}
+			_catchup_dedup_active = false;
+		}
+
 		copy_packet->SetSequenceNumber(_video_rtp_sequence_number++);
 	}
 	else

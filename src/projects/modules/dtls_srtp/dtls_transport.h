@@ -28,6 +28,12 @@ public:
 	// Start DTLS
 	bool StartDTLS();
 
+	// The handshake is completed and the SRTP keys have been exported
+	bool IsConnected() const
+	{
+		return _state == SSL_CONNECTED;
+	}
+
 	bool Stop() override;
 	//--------------------------------------------------------------------
 	// Implementation of Node

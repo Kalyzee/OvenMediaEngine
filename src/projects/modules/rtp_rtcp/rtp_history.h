@@ -16,10 +16,17 @@ public:
 	// Converting to RtxRtpPacket
 	bool StoreRtpPacket(const std::shared_ptr<RtpPacket> &packet);
 	std::shared_ptr<RtxRtpPacket> GetRtxRtpPacket(uint16_t seq_no);
+	std::shared_ptr<RtpPacket> GetRtpPacket(uint16_t seq_no);
+
 
 	uint8_t	GetOriginPayloadType();
 	uint32_t GetRtxSsrc();
 	uint8_t GetRtxPayloadType();
+	uint16_t GetLastSequenceNumber() const;
+	// Range to resend so a late viewer can decode immediately: from the first packet of
+	// the last stored keyframe up to the last stored packet (the whole tail of the GOP).
+	// Returns false if no keyframe is stored or if it has been overwritten in the history.
+	bool GetCatchUpRange(uint16_t &start_seq_no, uint16_t &end_seq_no) const;
 
 private:
 	uint16_t GetIndex(uint16_t seq_no);
@@ -32,7 +39,7 @@ private:
 	// with 9600 sequence number differences are very old packets. 
 	// Since RTP packets have a creation time, old packets may not be used. 
 	// This can avoid collision. Therefore, set max_history_size to a large value as possible.
-	std::shared_mutex	_history_lock;
+	mutable std::shared_mutex	_history_lock;
 	std::unordered_map<uint16_t, std::shared_ptr<RtpPacket>> _history;
 
 	// Creating RtxRtpPacket requires computing resources, but not all of them are used
@@ -49,4 +56,9 @@ private:
 	uint32_t	_rtx_ssrc;
 	uint8_t		_rtx_paylod_type;
 	uint32_t	_max_history_size;
+	uint16_t	_last_sequence_number = 0;
+	bool		_key_frame_stored = false;
+	uint16_t	_last_key_frame_first_sequence_number = 0;
+	uint16_t	_last_key_frame_last_sequence_number = 0;
+	uint32_t	_last_key_frame_timestamp = 0;
 };
