@@ -41,11 +41,16 @@ bool RtcpTransportCcFeedbackGenerator::AddReceivedRtpPacket(const std::shared_pt
 
 	logtd("AddReceivedRtpPacket: wide_seq(%u) %s", wide_sequence_number, packet->Dump().CStr());
 
+	// A reordered or retransmitted packet may belong to a feedback that is already stopped and
+	// still waiting to be sent. A stopped feedback covers exactly its own reported range,
+	// [base, base + status_count - 1]; the modular offset keeps the test correct across the
+	// 16 bits rollover and includes the base itself (which may be a packet reported as lost
+	// and retransmitted afterwards).
 	auto transport_cc = _transport_cc;
-	for (auto it = _last_transport_ccs.begin(); it != _last_transport_ccs.end(); ++it)
+	for (const auto& curr : _last_transport_ccs)
 	{
-		auto curr = *it;
-		if (wide_sequence_number > curr->GetBaseSequenceNumber() && wide_sequence_number <= curr->GetMaxSequenceNumber())
+		uint16_t offset = wide_sequence_number - curr->GetBaseSequenceNumber();
+		if (offset < curr->GetPacketStatusCount())
 		{
 			// complete transport_cc buffered
 			transport_cc = curr;
@@ -57,14 +62,6 @@ bool RtcpTransportCcFeedbackGenerator::AddReceivedRtpPacket(const std::shared_pt
 	if (transport_cc == nullptr)
 	{
 		transport_cc = CreateTransportCc(wide_sequence_number);
-		for (auto it = _last_transport_ccs.begin(); it != _last_transport_ccs.end(); ++it)
-		{
-			auto curr = *it;
-			uint32_t max = wide_sequence_number - 1;
-			if (wide_sequence_number == 0) max = std::numeric_limits<uint16_t>::max();
-			else if (max < curr->GetBaseSequenceNumber()) max += std::numeric_limits<uint16_t>::max();
-			curr->SetMaxSequenceNumber(max);
-		}
 		_transport_cc = transport_cc;
 	}
 	auto now = std::chrono::system_clock::now();
@@ -72,8 +69,6 @@ bool RtcpTransportCcFeedbackGenerator::AddReceivedRtpPacket(const std::shared_pt
 	transport_cc->SetMediaSsrc(packet->Ssrc());
 
 	_last_rtp_received_time = now;
-
-	auto l = _last_wide_sequence_number;
 
 	if (wide_sequence_number >= _last_wide_sequence_number)
 	{
@@ -105,7 +100,9 @@ bool RtcpTransportCcFeedbackGenerator::HasElapsedSinceLastTransportCc(uint32_t m
 
 std::shared_ptr<TransportCc> RtcpTransportCcFeedbackGenerator::PopAvailableTransportCc()
 {
-	for (int i = _last_transport_ccs.size() - 1; i >= 0; --i)
+	// Oldest first: receivers use the feedback packet count to detect lost feedbacks, so
+	// emitting them out of order would look like feedback loss to the remote estimator.
+	for (size_t i = 0; i < _last_transport_ccs.size(); ++i)
 	{
 		auto transport_cc = _last_transport_ccs[i];
 		if (transport_cc->AllPacketsReceived() || transport_cc->GetElasped() > TRANSPORT_CC_MAX_BUFFERING_TIME_MS)
@@ -126,6 +123,13 @@ bool RtcpTransportCcFeedbackGenerator::StopCurrentTransportCc()
 	_transport_cc->Stop();
 	_last_transport_ccs.push_back(_transport_cc);
 	_transport_cc = nullptr;
+
+	// The cycle restarts as soon as a feedback is closed, not when it is finally sent.
+	// Otherwise a feedback held back in the buffer (waiting for a missing packet) would leave
+	// HasElapsedSinceLastTransportCc() permanently true, and every single incoming RTP packet
+	// would open a feedback, immediately close it and send it - one RTCP packet per RTP packet.
+	_last_report_time = std::chrono::system_clock::now();
+
 	return true;
 }
 
@@ -176,7 +180,8 @@ std::shared_ptr<RtcpPacket> RtcpTransportCcFeedbackGenerator::GenerateTransportC
 	transport_cc->CalculeDeltas();
 	rtcp_packet->Build(transport_cc);
 
-	_last_report_time = std::chrono::system_clock::now();
+	// _last_report_time is not touched here: the cycle boundary is when the feedback is closed
+	// (see StopCurrentTransportCc), otherwise the time spent buffering would stretch the cycle.
 
 	return rtcp_packet;
 }

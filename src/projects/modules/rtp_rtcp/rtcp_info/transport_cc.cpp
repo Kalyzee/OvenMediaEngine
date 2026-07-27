@@ -382,9 +382,6 @@ bool TransportCc::AddPacketFeedbackInfo(const std::shared_ptr<PacketFeedbackInfo
 		_packet_feedbacks[index] = packet_feedback_info;
 	}
 
-	uint32_t last_sequence_number = _base_sequence_number + _packet_status_count;
-	_max_sequence_number = last_sequence_number > _max_sequence_number ? last_sequence_number : _max_sequence_number;
-
 	return true;
 }
 

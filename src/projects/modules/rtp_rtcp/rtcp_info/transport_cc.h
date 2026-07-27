@@ -104,8 +104,8 @@ public:
 	}
 
 	// Transport Feedback
+	// The range covered by a feedback is [base, base + packet_status_count - 1]
 	uint16_t GetBaseSequenceNumber(){return _base_sequence_number;}
-	uint32_t GetMaxSequenceNumber(){return _max_sequence_number;}
 
 	int32_t GetReferenceTime(){return _reference_time;}
 	uint16_t GetPacketStatusCount(){return _packet_status_count;}
@@ -114,10 +114,6 @@ public:
 	void SetBaseSequenceNumber(uint16_t base_sequence_number)
 	{
 		_base_sequence_number = base_sequence_number;
-	}
-		void SetMaxSequenceNumber(uint32_t max_sequence_number)
-	{
-		_max_sequence_number = max_sequence_number;
 	}
 	void SetReferenceTime(int32_t reference_time)
 	{
@@ -190,7 +186,6 @@ private:
 	uint32_t _media_ssrc = 0;
 
 	uint16_t _base_sequence_number = 0;
-	uint32_t _max_sequence_number = 0;
 
 	uint16_t _packet_status_count = 0;
 	int32_t _reference_time = 0; // 24bit signed integer (64/1000 scale, multiples of 64ms)
