@@ -367,19 +367,48 @@ bool RtcSession::SendRenditionChanged(const std::shared_ptr<const RtcRendition> 
 
 bool RtcSession::EnableVideo(bool enable)
 {
-	bool updated = enable != _video_enabled;
-	_video_enabled = enable;
-	if (updated) {
-		SendSessionChanged();
-		if (_video_enabled)
+	bool updated = false;
+
+	{
+		// _send_lock is held across the flag change and the catch-up so both are atomic with
+		// respect to the live path: a video packet that reads _video_enabled == true in
+		// IsSelectedPacket() then blocks here, and is therefore covered by the dedup that
+		// SendVideoCatchUpLocked() arms. Otherwise it could be sent before the resent GOP and
+		// end up duplicated inside it, with non monotonic timestamps.
+		std::lock_guard<std::mutex> send_lock(_send_lock);
+
+		updated = enable != _video_enabled;
+		if (updated == false)
 		{
-			SendVideoCatchUp();
+			return true;
+		}
+
+		_video_enabled = enable;
+
+		if (enable)
+		{
+			SendVideoCatchUpLocked();
+		}
+		else
+		{
+			// The pending dedup refers to a GOP this session is no longer sending
+			_catchup_dedup_active = false;
 		}
 	}
+
+	// Signalling must not be sent while holding _send_lock
+	SendSessionChanged();
+
 	return true;
 }
 
 void RtcSession::SendVideoCatchUp()
+{
+	std::lock_guard<std::mutex> send_lock(_send_lock);
+	SendVideoCatchUpLocked();
+}
+
+void RtcSession::SendVideoCatchUpLocked()
 {
 	if (_video_enabled == false)
 	{
@@ -449,7 +478,7 @@ void RtcSession::SendVideoCatchUp()
 		packets.push_back(rtp_packet);
 	}
 
-	std::lock_guard<std::mutex> send_lock(_send_lock);
+	// _send_lock is held by the caller
 	for (const auto &rtp_packet : packets)
 	{
 		auto copy_packet = std::make_shared<RtpPacket>(*rtp_packet);
@@ -567,6 +596,17 @@ void RtcSession::ChangeRendition()
 	_next_rendition = nullptr;
 
 	lock.unlock();
+
+	// The dedup window is expressed in the sequence number space of the track the catch-up read
+	// from. The new rendition is a different track with unrelated sequence numbers, so keeping
+	// the window would drop live video for as long as the difference reads as "already sent" -
+	// up to 32768 packets.
+	// _change_rendition_lock is released first: the only allowed order is _send_lock then
+	// _change_rendition_lock (see SendVideoCatchUpLocked).
+	{
+		std::lock_guard<std::mutex> send_lock(_send_lock);
+		_catchup_dedup_active = false;
+	}
 
 	SendRenditionChanged(_current_rendition);
 }

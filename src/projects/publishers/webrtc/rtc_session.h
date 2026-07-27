@@ -121,6 +121,9 @@ private:
 	// Resend the tail of the current GOP (last keyframe and every packet stored after it)
 	// so a viewer enabling video does not have to wait for the next keyframe
 	void SendVideoCatchUp();
+	// Same, but the caller must already hold _send_lock. Used when the catch-up has to be
+	// atomic with another state change, so that no live packet can slip in between.
+	void SendVideoCatchUpLocked();
 
 	bool SendPlaylistInfo(const std::shared_ptr<const RtcPlaylist> &playlist) const;
 	bool SendRenditionChanged(const std::shared_ptr<const RtcRendition> &rendition) const;
