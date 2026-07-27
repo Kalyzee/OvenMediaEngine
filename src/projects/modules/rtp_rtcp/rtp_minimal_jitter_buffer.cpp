@@ -4,8 +4,15 @@
 
 bool RtpMinimalJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket> &packet)
 {
-	// Already it determined this packet was lost
-	if(packet->SequenceNumber() < _next_sequence_number)
+	// Already it determined this packet was lost.
+	// The comparison must use modular (16 bits) arithmetic: a naive "<" would reject every
+	// packet after a wraparound (e.g. next == 65535 lost, then 0, 1, 2... all look "older"),
+	// which would leave the buffer empty forever - so the lost-packet skip in
+	// PopAvailablePacket() could never trigger and the track would stall until the sequence
+	// number came back around.
+	// _first_packet must be checked first: _next_sequence_number is still 0 at that point,
+	// so any initial sequence number in the upper half would look negative.
+	if (_first_packet == false && static_cast<int16_t>(packet->SequenceNumber() - _next_sequence_number) < 0)
 	{
 		return false;
 	}
