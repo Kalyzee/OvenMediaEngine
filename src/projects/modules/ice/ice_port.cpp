@@ -528,6 +528,24 @@ static constexpr int64_t ICE_CONSENT_TIMEOUT_MS = 15000;
 // 10s tolerates one missed check while still excluding paths that have gone quiet for good.
 static constexpr int64_t ICE_ALTERNATE_PATH_MAX_IDLE_MS = 10000;
 
+// Migrating and tearing down are different decisions and must not share a threshold.
+// Tearing down is irreversible and costs a full reconnection, so it waits for the consent
+// timeout - proof that nothing works. Migrating onto a path we have just proven alive is cheap
+// and reversible, so it only needs proof that the nominated path stopped delivering.
+//
+// That distinction is what makes a network change recover quickly. When a peer loses its
+// interface it immediately probes OME from the new one; OME answers and probes back, so the
+// new pair is validated within about a second. Waiting for the 15s consent timeout to use it
+// would freeze the media for 15s with the replacement path sitting ready the whole time.
+//
+// Migration needs two conditions, because "the nominated path is quiet" alone is not enough:
+// a playback session whose viewer sends nothing but consent checks is legitimately idle for
+// ~5s at a time. So the alternate path must also be clearly *fresher* than the nominated one.
+// When both are equally idle nothing happens; when one is being actively used and the other is
+// not, the peer has moved and we follow it.
+static constexpr int64_t ICE_PATH_MIGRATION_MIN_IDLE_MS = 3000;
+static constexpr int64_t ICE_PATH_MIGRATION_FRESHNESS_MARGIN_MS = 2000;
+
 void IcePort::CheckTimedOut()
 {
 	// Remove expired transction items
@@ -592,8 +610,9 @@ void IcePort::CheckTimedOut()
 		int64_t idle_ms = 0;
 	};
 
-	std::vector<ConsentCandidate> consent_check_list;
-	std::vector<ConsentCandidate> consent_lost_list;
+	// Sessions whose nominated path has been quiet long enough to deserve a look. The lowest of
+	// the three thresholds, so one pass covers migration, probing and teardown.
+	std::vector<ConsentCandidate> attention_list;
 	{
 		std::shared_lock<std::shared_mutex> lock_guard(_ice_sessions_with_id_lock);
 
@@ -617,54 +636,70 @@ void IcePort::CheckTimedOut()
 			// The nominated path, and only it: activity on an alternate path says nothing
 			// about whether the peer is still receiving what we send on this one.
 			auto idle_ms = nominated_pair->GetElapsedMsSinceLastReceived();
-			if (idle_ms > ICE_CONSENT_TIMEOUT_MS)
+			if (idle_ms > ICE_PATH_MIGRATION_MIN_IDLE_MS)
 			{
-				consent_lost_list.push_back({session, nominated_pair, idle_ms});
-			}
-			else if (idle_ms > ICE_CONSENT_CHECK_INTERVAL_MS && nominated_pair->GetElapsedMsSinceLastConsentRequest() > ICE_CONSENT_CHECK_INTERVAL_MS)
-			{
-				consent_check_list.push_back({session, nominated_pair, idle_ms});
+				attention_list.push_back({session, nominated_pair, idle_ms});
 			}
 		}
 	}
 
-	// Dead nominated paths : migrate to a usable alternate path if there is one, otherwise
-	// disconnect so the session is torn down on the next pass (the peer can then reconnect).
-	for (auto &candidate : consent_lost_list)
+	// Resolved outside the sessions lock : migrating takes the session's own locks.
+	for (auto &candidate : attention_list)
 	{
 		auto &session = candidate.session;
+		const auto nominated_address = candidate.nominated_pair->GetAddressPair();
+		const bool consent_lost = candidate.idle_ms > ICE_CONSENT_TIMEOUT_MS;
 
 		// Only a path that is both validated and currently active is worth migrating to.
 		// Requiring recent activity is what prevents moving onto a stale path that happened to
 		// be validated minutes ago - IsConnectable() alone never expires.
 		auto alternate_pair = session->FindFreshAlternatePair(ICE_ALTERNATE_PATH_MAX_IDLE_MS);
-		if (alternate_pair == nullptr)
+		if (alternate_pair != nullptr)
+		{
+			auto alternate_idle_ms = alternate_pair->GetElapsedMsSinceLastReceived();
+
+			// Migrate early when the alternate path is clearly more alive than the nominated
+			// one - that is a peer that moved, and there is no reason to keep sending into the
+			// void until the consent timeout. Once consent is actually lost, take any usable
+			// alternate: at that point the only other option is dropping the session.
+			if (consent_lost || (alternate_idle_ms + ICE_PATH_MIGRATION_FRESHNESS_MARGIN_MS < candidate.idle_ms))
+			{
+				logti("ICE session %u : migrating from %s (idle %" PRId64 " ms) to %s (idle %" PRId64 " ms)%s",
+					  session->GetSessionID(), nominated_address.ToString().CStr(), candidate.idle_ms,
+					  alternate_pair->GetAddressPair().ToString().CStr(), alternate_idle_ms,
+					  consent_lost ? " after consent loss" : "");
+
+				// This is the step that was missing for CONTROLLING sessions - every viewer, and
+				// every non-WHIP ingest. As controlling agent OME never receives USE-CANDIDATE,
+				// and the other call sites only fire while Checking, so nothing could re-nominate
+				// once Connected. UseCandidate() still enforces the anti-flap interval and the
+				// validated-pair check.
+				if (UseCandidate(session, alternate_pair->GetAddressPair()) == true)
+				{
+					continue;
+				}
+
+				// Refused (anti-flap). Fall through: probe, or tear down if consent is lost.
+				logtd("ICE session %u : migration to %s was refused for now",
+					  session->GetSessionID(), alternate_pair->GetAddressPair().ToString().CStr());
+			}
+		}
+
+		if (consent_lost)
 		{
 			logtw("ICE session %u : consent lost on %s (idle for %" PRId64 " ms) and no usable alternate path, disconnecting",
-				  session->GetSessionID(), candidate.nominated_pair->GetAddressPair().ToString().CStr(), candidate.idle_ms);
+				  session->GetSessionID(), nominated_address.ToString().CStr(), candidate.idle_ms);
 			session->SetState(IceConnectionState::Disconnecting);
 			continue;
 		}
 
-		logti("ICE session %u : consent lost on %s (idle for %" PRId64 " ms), migrating to %s",
-			  session->GetSessionID(), candidate.nominated_pair->GetAddressPair().ToString().CStr(),
-			  candidate.idle_ms, alternate_pair->GetAddressPair().ToString().CStr());
-
-		// This is the step that was missing for CONTROLLING sessions - every viewer, and every
-		// non-WHIP ingest. As controlling agent OME never receives USE-CANDIDATE, and the other
-		// call sites only fire while Checking, so nothing could ever re-nominate once Connected.
-		// UseCandidate() still enforces the anti-flap interval and the validated-pair check.
-		if (UseCandidate(session, alternate_pair->GetAddressPair()) == false)
+		// Still within the consent window : probe the nominated path to confirm it is alive.
+		if (candidate.idle_ms <= ICE_CONSENT_CHECK_INTERVAL_MS ||
+			candidate.nominated_pair->GetElapsedMsSinceLastConsentRequest() <= ICE_CONSENT_CHECK_INTERVAL_MS)
 		{
-			logtw("ICE session %u : migration to %s was refused, disconnecting",
-				  session->GetSessionID(), alternate_pair->GetAddressPair().ToString().CStr());
-			session->SetState(IceConnectionState::Disconnecting);
+			continue;
 		}
-	}
 
-	// Idle-but-not-yet-dead paths : send a STUN binding request to confirm liveness.
-	for (auto &candidate : consent_check_list)
-	{
 		auto remote = candidate.nominated_pair->GetSocket();
 		if (remote == nullptr)
 		{
@@ -676,7 +711,7 @@ void IcePort::CheckTimedOut()
 		gate_info.packet_type = IcePacketIdentifier::PacketType::STUN;
 
 		candidate.nominated_pair->MarkConsentRequestSent();
-		SendStunBindingRequest(remote, candidate.nominated_pair->GetAddressPair(), gate_info, candidate.session);
+		SendStunBindingRequest(remote, nominated_address, gate_info, candidate.session);
 	}
 }
 
