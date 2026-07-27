@@ -32,6 +32,10 @@ private:
         NOT_CALCULATED,
         TEMPORARY_VALUE,
         FINAL_VALUE,
+        // Both SRs arrived but the resulting offset was not credible. Terminal, like
+        // FINAL_VALUE: the inputs never change afterwards, so recomputing it on every packet
+        // would only produce the same value and flood the log.
+        ABANDONED,
     };
 
 		std::shared_mutex _clock_lock;

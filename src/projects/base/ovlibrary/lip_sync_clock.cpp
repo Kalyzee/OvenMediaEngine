@@ -115,7 +115,7 @@ std::optional<int64_t> LipSyncClock::CalcPTS(uint32_t id, uint32_t rtp_timestamp
 	{
 		// delta with the first clock (time between first packet of first clock and first packet of this clock)
 		int64_t delta_ms = 0;
-		if (clock->_offset_state != Clock::OffsetState::FINAL_VALUE)
+		if (clock->_offset_state != Clock::OffsetState::FINAL_VALUE && clock->_offset_state != Clock::OffsetState::ABANDONED)
 		{
 			// The first clock's fields are written by the thread handling that other track, so
 			// they must be read under its own lock. Ordering is always "this clock then first
@@ -144,7 +144,12 @@ std::optional<int64_t> LipSyncClock::CalcPTS(uint32_t id, uint32_t rtp_timestamp
 				// wrong by about 13 hours at 90kHz and desynchronise the track for good.
 				if (std::abs(delta_ms) > LIP_SYNC_MAX_OFFSET_MS)
 				{
-					logtw("Implausible inter-track offset for id(%u) : %" PRId64 " ms, ignored", id, delta_ms);
+					// Terminal: the inputs are fixed constants from here on, so retrying would
+					// recompute the same value and log it for every packet of the stream.
+					// The track keeps playing unaligned, which is far better than shifting it
+					// by hours.
+					logtw("Implausible inter-track offset for id(%u) : %" PRId64 " ms, giving up on lip-sync alignment for this track", id, delta_ms);
+					clock->_offset_state = Clock::OffsetState::ABANDONED;
 				}
 				else
 				{
