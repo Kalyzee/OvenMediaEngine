@@ -89,12 +89,15 @@ private:
 	std::shared_ptr<RtcpTransportCcFeedbackGenerator> _transport_cc_generator = nullptr;
 
 	// Jitter buffer
-	// payload type : Jitter buffer
-	std::unordered_map<uint8_t, std::shared_ptr<RtpFrameJitterBuffer>> _rtp_frame_jitter_buffers;
-	std::unordered_map<uint8_t, std::shared_ptr<RtpMinimalJitterBuffer>> _rtp_minimal_jitter_buffers;
+	// track id : Jitter buffer
+	// The key must be 32 bits wide: the WebRTC provider uses the SSRC as track id (the RTSP one
+	// uses the channel id), and a uint8_t key silently truncated it - two SSRCs sharing their
+	// low byte would collide and overwrite each other's track.
+	std::unordered_map<uint32_t, std::shared_ptr<RtpFrameJitterBuffer>> _rtp_frame_jitter_buffers;
+	std::unordered_map<uint32_t, std::shared_ptr<RtpMinimalJitterBuffer>> _rtp_minimal_jitter_buffers;
 
-	// payload type : MediaTrack Info
-	std::unordered_map<uint8_t, std::shared_ptr<MediaTrack>> _tracks;
+	// track id : MediaTrack Info
+	std::unordered_map<uint32_t, std::shared_ptr<MediaTrack>> _tracks;
 	bool _video_receiver_enabled = false;
 	bool _audio_receiver_enabled = false;
 

@@ -280,14 +280,24 @@ bool RtpRtcp::SetContentMediaType(uint32_t ssrc, ov::String content)
 {
 	auto ssrc_info = GetOrCreateSsrcInfo(ssrc);
 	ssrc_info->content = content;
-	auto rtp_frame_jitter_buffers = _rtp_frame_jitter_buffers[ssrc];
-	if (rtp_frame_jitter_buffers != nullptr)
+
+	if (content != "slides")
 	{
-		if (ssrc_info->content == "slides")
-		{
-			rtp_frame_jitter_buffers->SetMaxBufferingTime(DEFAULT_VIDEO_SLIDES_MAX_BUFFERING_TIME_MS);
-		}
+		return true;
 	}
+
+	// The jitter buffers are keyed by track id, which the WebRTC provider sets to the SSRC.
+	// find() and not operator[] : the latter would insert a null shared_ptr for an unknown key,
+	// which OnRtpReceived() would then dereference (it only tests for end()).
+	auto item = _rtp_frame_jitter_buffers.find(ssrc);
+	if (item == _rtp_frame_jitter_buffers.end() || item->second == nullptr)
+	{
+		logtw("Could not apply content type '%s' : no video jitter buffer for track %u", content.CStr(), ssrc);
+		return false;
+	}
+
+	item->second->SetMaxBufferingTime(DEFAULT_VIDEO_SLIDES_MAX_BUFFERING_TIME_MS);
+
 	return true;
 }
 
