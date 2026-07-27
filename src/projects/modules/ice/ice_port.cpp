@@ -315,7 +315,9 @@ bool IcePort::RemoveIceSession(const ov::SocketAddressPair &address_pair, const 
 
 std::shared_ptr<IceSession> IcePort::FindIceSession(session_id_t session_id)
 {
-	std::shared_lock<std::shared_mutex> lock_guard(_ice_sessions_with_address_pair_lock);
+	// _ice_seesions_with_id is guarded by _ice_sessions_with_id_lock, which is what
+	// AddIceSession()/RemoveSession() take when they mutate it
+	std::shared_lock<std::shared_mutex> lock_guard(_ice_sessions_with_id_lock);
 	auto item = _ice_seesions_with_id.find(session_id);
 	if (item != _ice_seesions_with_id.end())
 	{
@@ -923,29 +925,41 @@ void IcePort::OnStunPacketReceived(const std::shared_ptr<ov::Socket> &remote, co
 
 bool IcePort::UseCandidate(const std::shared_ptr<IceSession> &ice_session, const ov::SocketAddressPair &address_pair)
 {
-	auto previous_candidate_pair = ice_session->GetConnectedCandidatePair();
-
-	if (ice_session->GetState() == IceConnectionState::Connected && previous_candidate_pair != nullptr && previous_candidate_pair->GetAddressPair() == address_pair)
-	{
-		// Already connected on this candidate pair
-		return true;
-	}
-
-	if (ice_session->UseCandidate(address_pair) == false)
+	// The pair that was in use is reported by IceSession::UseCandidate() under the same lock as
+	// the mutation. Reading it beforehand would be a time-of-check/time-of-use race: candidates
+	// on different local ports are served by different workers, so two concurrent nominations
+	// could both observe the same previous pair and each migrate elsewhere. One of the two
+	// mappings would then never be removed, keeping a stale address routed to this session and
+	// holding a reference to it after RemoveSession() - which only erases the current pair's
+	// address. That leaks the session and blocks any later session reusing that 5-tuple.
+	std::shared_ptr<IceCandidatePair> previous_candidate_pair;
+	if (ice_session->UseCandidate(address_pair, &previous_candidate_pair) == false)
 	{
 		return false;
+	}
+
+	// Already connected on this candidate pair : nothing to re-register
+	if (previous_candidate_pair != nullptr && previous_candidate_pair->GetAddressPair() == address_pair)
+	{
+		return true;
 	}
 
 	logti("Session %u uses candidate: %s", ice_session->GetSessionID(), address_pair.ToString().CStr());
 
 	// Register the (new) connected path so that incoming application/TURN packets from this
 	// address are routed to this session.
-	AddIceSession(address_pair, ice_session);
+	if (AddIceSession(address_pair, ice_session) == false)
+	{
+		// The address is already mapped, possibly to a stale entry. Without this the new path
+		// would silently never be routed to this session.
+		logtw("Session %u : could not register the connected path %s, it is already mapped",
+			  ice_session->GetSessionID(), address_pair.ToString().CStr());
+	}
 
 	// On path migration, drop the previous path mapping so that the old (now dead) address no
 	// longer resolves to this session, and so it does not keep the session referenced after
 	// RemoveSession() - which only erases the currently connected candidate pair's address.
-	if (previous_candidate_pair != nullptr && previous_candidate_pair->GetAddressPair() != address_pair)
+	if (previous_candidate_pair != nullptr)
 	{
 		RemoveIceSession(previous_candidate_pair->GetAddressPair(), ice_session);
 	}
@@ -975,8 +989,6 @@ bool IcePort::OnReceivedStunBindingRequest(const std::shared_ptr<ov::Socket> &re
 		return false;
 	}
 
-	ice_session->Refresh();
-
 	if (ice_session->GetPeerSdp()->GetIceUfrag() != peer_ufrag)
 	{
 		logtw("Mismatched ufrag: %s (ufrag in peer SDP: %s)", peer_ufrag.CStr(), ice_session->GetPeerSdp()->GetIceUfrag().CStr());
@@ -992,6 +1004,12 @@ bool IcePort::OnReceivedStunBindingRequest(const std::shared_ptr<ov::Socket> &re
 
 		return false;
 	}
+
+	// Only authenticated traffic may keep the session alive (RFC 7675 5.1). The local ufrag
+	// travels in the SDP through the signalling channel, so anyone who knows it could otherwise
+	// hold the session open - and postpone the consent timeout - with unauthenticated requests
+	// sent from any address.
+	ice_session->Refresh();
 
 	// Add the candidate to the session
 	auto old_state = ice_session->GetState();
@@ -1165,18 +1183,19 @@ bool IcePort::OnReceivedStunBindingResponse(const std::shared_ptr<ov::Socket> &r
 		return false;
 	}
 
-	ice_session->Refresh();
-
 	// Erase ended transction item
 	RemoveTransaction(transaction_id_key);
 
-	logtd("Receive stun binding response from %s, table size(%d)", address_pair.ToString().CStr(), _binding_requests_with_transaction_id.size());
+	logtd("Receive stun binding response from %s", address_pair.ToString().CStr());
 
 	if (message.CheckIntegrity(ice_session->GetLocalSdp()->GetIcePwd()) == false)
 	{
 		logtw("Failed to check integrity");
 		return false;
 	}
+
+	// Only an authenticated response refreshes the session (RFC 7675 5.1)
+	ice_session->Refresh();
 
 	logtd("Client %s sent STUN binding response", address_pair.ToString().CStr());
 

@@ -304,9 +304,15 @@ bool IceSession::IsConnected(const ov::SocketAddressPair& address_pair)
 }
 
 // USE-CANDIDATE, used for controlling role
-bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair)
+bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair, std::shared_ptr<IceCandidatePair>* previous_candidate_pair)
 {
 	std::lock_guard<std::shared_mutex> lock(_connected_candidate_pair_mutex);
+
+	// Reported under the lock, together with the mutation below
+	if (previous_candidate_pair != nullptr)
+	{
+		*previous_candidate_pair = _connected_candidate_pair;
+	}
 
 	auto state = GetState();
 
@@ -336,6 +342,19 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair)
 
 	if (state == IceConnectionState::Connected)
 	{
+		// RFC 8445 7.3.1.5 : only a validated pair may be nominated. FindCandidatePair() resolves
+		// pairs that OnReceivedStunBindingRequest() created on the fly, so without this check a
+		// single binding request with a correct integrity but a spoofed source address would move
+		// the media path: the real path stops being routed to this session and the media is sent
+		// to the spoofed address. IsConnectable() means we both received a request on that pair
+		// and got a response to our own request, which a spoofer cannot obtain.
+		if (candidate_pair->IsConnectable() == false)
+		{
+			logtw("ICE session : %u | Refuse path migration to %s : candidate pair is not validated yet",
+				  GetSessionID(), address_pair.ToString().CStr());
+			return false;
+		}
+
 		// Anti-flap : do not migrate too often. This also avoids bouncing between
 		// candidate pairs during the initial connection, when the peer may nominate
 		// several pairs in a very short time.

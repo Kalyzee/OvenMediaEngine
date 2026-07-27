@@ -89,7 +89,10 @@ public:
 	bool IsConnected(const ov::SocketAddressPair& address_pair);
 
 	// USE-CANDIDATE, used for controlling role
-	bool UseCandidate(const ov::SocketAddressPair& address_pair);
+	// Nominates a candidate pair. When previous_candidate_pair is given, it receives the pair
+	// that was nominated before this call, read under the same lock as the mutation: the caller
+	// needs both atomically to keep the address -> session mappings consistent.
+	bool UseCandidate(const ov::SocketAddressPair& address_pair, std::shared_ptr<IceCandidatePair>* previous_candidate_pair = nullptr);
 
 	// Connected candidate pairs
 	std::shared_ptr<IceCandidatePair> GetConnectedCandidatePair() const;
