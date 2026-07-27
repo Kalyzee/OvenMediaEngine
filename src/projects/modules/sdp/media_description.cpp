@@ -82,7 +82,7 @@ bool MediaDescription::UpdateData(ov::String &sdp)
 
 	if (_content.IsEmpty() == false)
 	{
-		sdp.AppendFormat("a=content:%s\r\n", _content);
+		sdp.AppendFormat("a=content:%s\r\n", _content.CStr());
 	}
 
 	// Extmap
