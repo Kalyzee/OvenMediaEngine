@@ -33,7 +33,7 @@ bool RtpRtcp::AddRtpSender(uint8_t payload_type, uint32_t ssrc, uint32_t codec_r
 		return false;
 	}
 
-	auto ssrc_info = GetSsrcInfo(ssrc);
+	auto ssrc_info = GetOrCreateSsrcInfo(ssrc);
 	ssrc_info->rtcp_sr_generator = std::make_shared<RtcpSRGenerator>(ssrc, codec_rate);
 
 	if (_sdes == nullptr)
@@ -107,7 +107,7 @@ bool RtpRtcp::SendRtpPacket(const std::shared_ptr<RtpPacket>& rtp_packet)
 
 	// RTCP(SR + SR + SDES + SDES)
 	auto ssrc_info = GetSsrcInfo(rtp_packet->Ssrc());
-	if (ssrc_info->rtcp_sr_generator != nullptr)
+	if ((ssrc_info != nullptr) && (ssrc_info->rtcp_sr_generator != nullptr))
 	{
 		ssrc_info->rtcp_sr_generator->AddRTPPacketInfo(rtp_packet);
 	}
@@ -118,18 +118,29 @@ bool RtpRtcp::SendRtpPacket(const std::shared_ptr<RtpPacket>& rtp_packet)
 		_rtcp_sent_count++;
 
 		auto compound_rtcp_data = std::make_shared<ov::Data>(1024);
-		for (const auto& item : _ssrc_map)
+
+		// Collect the generators under the lock, then use them outside of it
+		std::vector<std::shared_ptr<RtcpSRGenerator>> rtcp_sr_generators;
 		{
-			auto rtcp_sr_generator = item.second.rtcp_sr_generator;
-			if (rtcp_sr_generator != nullptr)
+			std::shared_lock<std::shared_mutex> ssrc_map_lock(_ssrc_map_lock);
+			rtcp_sr_generators.reserve(_ssrc_map.size());
+			for (const auto& item : _ssrc_map)
 			{
-				auto rtcp_sr_packet = rtcp_sr_generator->PopRtcpSRPacket();
-				if (rtcp_sr_packet == nullptr)
+				if (item.second.rtcp_sr_generator != nullptr)
 				{
-					continue;
+					rtcp_sr_generators.push_back(item.second.rtcp_sr_generator);
 				}
-				compound_rtcp_data->Append(rtcp_sr_packet->GetData());
 			}
+		}
+
+		for (const auto& rtcp_sr_generator : rtcp_sr_generators)
+		{
+			auto rtcp_sr_packet = rtcp_sr_generator->PopRtcpSRPacket();
+			if (rtcp_sr_packet == nullptr)
+			{
+				continue;
+			}
+			compound_rtcp_data->Append(rtcp_sr_packet->GetData());
 		}
 
 		if (_rtcp_sdes == nullptr)
@@ -159,7 +170,7 @@ bool RtpRtcp::SendRtpPacket(const std::shared_ptr<RtpPacket>& rtp_packet)
 bool RtpRtcp::SendNACK(uint32_t media_ssrc, const std::vector<uint16_t>& lost_sequences)
 {
 	auto ssrc_info = GetSsrcInfo(media_ssrc);
-	auto stat = ssrc_info->receive_statistic;
+	auto stat = (ssrc_info != nullptr) ? ssrc_info->receive_statistic : nullptr;
 	if (stat == nullptr)
 	{
 		// Never received such SSRC packet
@@ -193,7 +204,7 @@ bool RtpRtcp::SendNACK(uint32_t media_ssrc, const std::vector<uint16_t>& lost_se
 bool RtpRtcp::SendPLI(uint32_t media_ssrc)
 {
 	auto ssrc_info = GetSsrcInfo(media_ssrc);
-	auto stat = ssrc_info->receive_statistic;
+	auto stat = (ssrc_info != nullptr) ? ssrc_info->receive_statistic : nullptr;
 	if (stat == nullptr)
 	{
 		// Never received such SSRC packet
@@ -216,7 +227,7 @@ bool RtpRtcp::SendPLI(uint32_t media_ssrc)
 bool RtpRtcp::SendFIR(uint32_t media_ssrc)
 {
 	auto ssrc_info = GetSsrcInfo(media_ssrc);
-	auto stat = ssrc_info->receive_statistic;
+	auto stat = (ssrc_info != nullptr) ? ssrc_info->receive_statistic : nullptr;
 	if (stat == nullptr)
 	{
 		// Never received such SSRC packet
@@ -241,12 +252,12 @@ bool RtpRtcp::SendFIR(uint32_t media_ssrc)
 bool RtpRtcp::IsTransportCcFeedbackEnabled(uint32_t ssrc)
 {
 	auto ssrc_info = GetSsrcInfo(ssrc);
-	return ssrc_info->transport_cc_feedback_enabled;
+	return (ssrc_info != nullptr) ? ssrc_info->transport_cc_feedback_enabled : false;
 }
 
 bool RtpRtcp::EnableTransportCcFeedback(uint32_t ssrc, uint8_t extension_id)
 {
-	auto ssrc_info = GetSsrcInfo(ssrc);
+	auto ssrc_info = GetOrCreateSsrcInfo(ssrc);
 	ssrc_info->transport_cc_feedback_extension_id = extension_id;
 	ssrc_info->transport_cc_feedback_enabled = true;
 
@@ -256,12 +267,18 @@ bool RtpRtcp::EnableTransportCcFeedback(uint32_t ssrc, uint8_t extension_id)
 void RtpRtcp::DisableTransportCcFeedback(uint32_t ssrc)
 {
 	auto ssrc_info = GetSsrcInfo(ssrc);
+	if (ssrc_info == nullptr)
+	{
+		// Nothing to disable
+		return;
+	}
+
 	ssrc_info->transport_cc_feedback_enabled = false;
 }
 
 bool RtpRtcp::SetContentMediaType(uint32_t ssrc, ov::String content)
 {
-	auto ssrc_info = GetSsrcInfo(ssrc);
+	auto ssrc_info = GetOrCreateSsrcInfo(ssrc);
 	ssrc_info->content = content;
 	auto rtp_frame_jitter_buffers = _rtp_frame_jitter_buffers[ssrc];
 	if (rtp_frame_jitter_buffers != nullptr)
@@ -390,7 +407,8 @@ bool RtpRtcp::OnRtpReceived(NodeType from_node, const std::shared_ptr<const ov::
 	}
 
 	auto track = track_it->second;
-	auto ssrc_info = GetSsrcInfo(packet->Ssrc());
+	// The track is known (checked above), so this SSRC is a legitimate one to register
+	auto ssrc_info = GetOrCreateSsrcInfo(packet->Ssrc());
 	int jitter_buffer_type = 0;
 
 	switch (track->GetOriginBitstream())
@@ -635,8 +653,10 @@ bool RtpRtcp::OnRtcpReceived(NodeType from_node, const std::shared_ptr<const ov:
 		if (info->GetPacketType() == RtcpPacketType::SR)
 		{
 			auto sr = std::dynamic_pointer_cast<SenderReport>(info);
+			// Lookup only: a remote peer must not be able to grow _ssrc_map by sending
+			// sender reports for arbitrary SSRCs we never received RTP from.
 			auto ssrc_info = GetSsrcInfo(sr->GetSenderSsrc());
-			if (ssrc_info->receive_statistic != nullptr)
+			if ((ssrc_info != nullptr) && (ssrc_info->receive_statistic != nullptr))
 			{
 				ssrc_info->receive_statistic->AddReceivedRtcpSenderReport(sr);
 			}
@@ -663,7 +683,23 @@ std::shared_ptr<RtcpPacket> RtpRtcp::GetLastSentRtcpPacket()
 
 RtpRtcp::RtpRtcpSscr* RtpRtcp::GetSsrcInfo(uint32_t ssrc)
 {
+	std::shared_lock<std::shared_mutex> lock(_ssrc_map_lock);
+
+	auto it = _ssrc_map.find(ssrc);
+	if (it == _ssrc_map.end())
+	{
+		return nullptr;
+	}
+
+	return &(it->second);
+}
+
+RtpRtcp::RtpRtcpSscr* RtpRtcp::GetOrCreateSsrcInfo(uint32_t ssrc)
+{
+	std::lock_guard<std::shared_mutex> lock(_ssrc_map_lock);
+
 	auto& ssrc_info = _ssrc_map[ssrc];
 	ssrc_info.ssrc = ssrc;
+
 	return &ssrc_info;
 }
