@@ -100,17 +100,26 @@ bool RtcpTransportCcFeedbackGenerator::HasElapsedSinceLastTransportCc(uint32_t m
 
 std::shared_ptr<TransportCc> RtcpTransportCcFeedbackGenerator::PopAvailableTransportCc()
 {
-	// Oldest first: receivers use the feedback packet count to detect lost feedbacks, so
-	// emitting them out of order would look like feedback loss to the remote estimator.
-	for (size_t i = 0; i < _last_transport_ccs.size(); ++i)
+	// Strict FIFO: only the oldest feedback is ever eligible. Receivers use the feedback packet
+	// count to detect lost feedbacks, so emitting them out of order looks like feedback loss.
+	// Scanning for the first *available* one would not be enough - a younger complete feedback
+	// would overtake an older one still waiting for a missing packet.
+	// Holding the queue on its head costs nothing: feedbacks are stopped in chronological order,
+	// so the head always has the largest elapsed time and is the first to reach the buffering
+	// limit. The only case where it is held back is a gap in it, which is exactly what the
+	// buffering window is for, and it is bounded by TRANSPORT_CC_MAX_BUFFERING_TIME_MS.
+	if (_last_transport_ccs.empty())
 	{
-		auto transport_cc = _last_transport_ccs[i];
-		if (transport_cc->AllPacketsReceived() || transport_cc->GetElasped() > TRANSPORT_CC_MAX_BUFFERING_TIME_MS)
-		{
-			_last_transport_ccs.erase(_last_transport_ccs.begin() + i);
-			return transport_cc;
-		}
+		return nullptr;
 	}
+
+	auto transport_cc = _last_transport_ccs.front();
+	if (transport_cc->AllPacketsReceived() || transport_cc->GetElasped() > TRANSPORT_CC_MAX_BUFFERING_TIME_MS)
+	{
+		_last_transport_ccs.erase(_last_transport_ccs.begin());
+		return transport_cc;
+	}
+
 	return nullptr;
 }
 
