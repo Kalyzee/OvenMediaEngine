@@ -501,12 +501,18 @@ bool IcePort::RemoveTransaction(const ov::String &transaction_id)
 	return true;
 }
 
-// Consent freshness (RFC 7675 style) on the connected path.
-// - When a connected, non-TURN path has been idle (no inbound media nor STUN) for longer than
-//   ICE_CONSENT_CHECK_INTERVAL_MS, OME sends a STUN binding request to it. A valid response
-//   refreshes the session (OnReceivedStunBindingResponse() calls Refresh()).
-// - If no inbound activity at all is seen for ICE_CONSENT_TIMEOUT_MS, the path is considered
-//   dead and the session is disconnected (the peer can then reconnect).
+// Consent freshness (RFC 7675 style), decided on the *nominated path* only.
+// - When the nominated, non-TURN path has been idle (no inbound media nor authenticated STUN)
+//   for longer than ICE_CONSENT_CHECK_INTERVAL_MS, OME sends it a STUN binding request. A valid
+//   response refreshes that path.
+// - After ICE_CONSENT_TIMEOUT_MS with no inbound activity the path is dead. Rather than dropping
+//   the session, OME first looks for another candidate pair that is both validated and currently
+//   active, and migrates to it; the session is only torn down when there is no such path.
+//   This is what makes a Wi-Fi/4G handover survive: while the nominated path dies, the peer keeps
+//   running connectivity checks on its new path, which OME answers and probes back, so that pair
+//   is validated and fresh by the time the nominated one times out.
+// Tracking freshness per path rather than per session is what makes this work at all - traffic on
+// the new path must not vouch for the old one, or the timeout would never fire.
 // Detection is time-based (not a missed-response counter) so it tolerates packet loss: any
 // inbound packet resets the timer, and in a live call media flows continuously.
 // ICE_CONSENT_TIMEOUT_MS is intentionally well below the passive session timeout (default 30s)
@@ -514,6 +520,13 @@ bool IcePort::RemoveTransaction(const ov::String &transaction_id)
 // lossy networks.
 static constexpr int64_t ICE_CONSENT_CHECK_INTERVAL_MS = 5000;
 static constexpr int64_t ICE_CONSENT_TIMEOUT_MS = 15000;
+
+// How recently an alternate path must have received traffic to be considered usable.
+// Peers run their own consent checks about every 5s (RFC 7675 randomizes the interval by
+// 0.8-1.2x, so up to ~6s), and that is often the only traffic an alternate path sees. A 5s
+// window would therefore reject a perfectly good path whenever a single check is late or lost;
+// 10s tolerates one missed check while still excluding paths that have gone quiet for good.
+static constexpr int64_t ICE_ALTERNATE_PATH_MAX_IDLE_MS = 10000;
 
 void IcePort::CheckTimedOut()
 {
@@ -571,9 +584,16 @@ void IcePort::CheckTimedOut()
 		NotifyIceSessionStateChanged(terminated_session);
 	}
 
-	// Consent freshness : probe idle connected paths and detect dead ones.
-	std::vector<std::shared_ptr<IceSession>> consent_check_list;
-	std::vector<std::shared_ptr<IceSession>> consent_lost_list;
+	// Consent freshness : probe idle nominated paths, migrate or tear down dead ones.
+	struct ConsentCandidate
+	{
+		std::shared_ptr<IceSession> session;
+		std::shared_ptr<IceCandidatePair> nominated_pair;
+		int64_t idle_ms = 0;
+	};
+
+	std::vector<ConsentCandidate> consent_check_list;
+	std::vector<ConsentCandidate> consent_lost_list;
 	{
 		std::shared_lock<std::shared_mutex> lock_guard(_ice_sessions_with_id_lock);
 
@@ -588,36 +608,64 @@ void IcePort::CheckTimedOut()
 				continue;
 			}
 
-			auto idle_ms = session->GetElapsedMsSinceLastReceived();
+			auto nominated_pair = session->GetConnectedCandidatePair();
+			if (nominated_pair == nullptr)
+			{
+				continue;
+			}
+
+			// The nominated path, and only it: activity on an alternate path says nothing
+			// about whether the peer is still receiving what we send on this one.
+			auto idle_ms = nominated_pair->GetElapsedMsSinceLastReceived();
 			if (idle_ms > ICE_CONSENT_TIMEOUT_MS)
 			{
-				consent_lost_list.push_back(session);
+				consent_lost_list.push_back({session, nominated_pair, idle_ms});
 			}
-			else if (idle_ms > ICE_CONSENT_CHECK_INTERVAL_MS && session->GetElapsedMsSinceLastConsentRequest() > ICE_CONSENT_CHECK_INTERVAL_MS)
+			else if (idle_ms > ICE_CONSENT_CHECK_INTERVAL_MS && nominated_pair->GetElapsedMsSinceLastConsentRequest() > ICE_CONSENT_CHECK_INTERVAL_MS)
 			{
-				consent_check_list.push_back(session);
+				consent_check_list.push_back({session, nominated_pair, idle_ms});
 			}
 		}
 	}
 
-	// Dead paths : disconnect so they are torn down on the next pass (peer can reconnect).
-	for (auto &session : consent_lost_list)
+	// Dead nominated paths : migrate to a usable alternate path if there is one, otherwise
+	// disconnect so the session is torn down on the next pass (the peer can then reconnect).
+	for (auto &candidate : consent_lost_list)
 	{
-		logtw("ICE session %u : consent lost (no activity on the connected path for %lld ms), disconnecting",
-			  session->GetSessionID(), static_cast<long long>(session->GetElapsedMsSinceLastReceived()));
-		session->SetState(IceConnectionState::Disconnecting);
-	}
+		auto &session = candidate.session;
 
-	// Idle-but-not-yet-dead paths : send a STUN binding request to confirm liveness.
-	for (auto &session : consent_check_list)
-	{
-		auto connected_candidate_pair = session->GetConnectedCandidatePair();
-		if (connected_candidate_pair == nullptr)
+		// Only a path that is both validated and currently active is worth migrating to.
+		// Requiring recent activity is what prevents moving onto a stale path that happened to
+		// be validated minutes ago - IsConnectable() alone never expires.
+		auto alternate_pair = session->FindFreshAlternatePair(ICE_ALTERNATE_PATH_MAX_IDLE_MS);
+		if (alternate_pair == nullptr)
 		{
+			logtw("ICE session %u : consent lost on %s (idle for %" PRId64 " ms) and no usable alternate path, disconnecting",
+				  session->GetSessionID(), candidate.nominated_pair->GetAddressPair().ToString().CStr(), candidate.idle_ms);
+			session->SetState(IceConnectionState::Disconnecting);
 			continue;
 		}
 
-		auto remote = connected_candidate_pair->GetSocket();
+		logti("ICE session %u : consent lost on %s (idle for %" PRId64 " ms), migrating to %s",
+			  session->GetSessionID(), candidate.nominated_pair->GetAddressPair().ToString().CStr(),
+			  candidate.idle_ms, alternate_pair->GetAddressPair().ToString().CStr());
+
+		// This is the step that was missing for CONTROLLING sessions - every viewer, and every
+		// non-WHIP ingest. As controlling agent OME never receives USE-CANDIDATE, and the other
+		// call sites only fire while Checking, so nothing could ever re-nominate once Connected.
+		// UseCandidate() still enforces the anti-flap interval and the validated-pair check.
+		if (UseCandidate(session, alternate_pair->GetAddressPair()) == false)
+		{
+			logtw("ICE session %u : migration to %s was refused, disconnecting",
+				  session->GetSessionID(), alternate_pair->GetAddressPair().ToString().CStr());
+			session->SetState(IceConnectionState::Disconnecting);
+		}
+	}
+
+	// Idle-but-not-yet-dead paths : send a STUN binding request to confirm liveness.
+	for (auto &candidate : consent_check_list)
+	{
+		auto remote = candidate.nominated_pair->GetSocket();
 		if (remote == nullptr)
 		{
 			continue;
@@ -627,8 +675,8 @@ void IcePort::CheckTimedOut()
 		gate_info.input_method = GateInfo::GateType::DIRECT;
 		gate_info.packet_type = IcePacketIdentifier::PacketType::STUN;
 
-		session->MarkConsentRequestSent();
-		SendStunBindingRequest(remote, connected_candidate_pair->GetAddressPair(), gate_info, session);
+		candidate.nominated_pair->MarkConsentRequestSent();
+		SendStunBindingRequest(remote, candidate.nominated_pair->GetAddressPair(), gate_info, candidate.session);
 	}
 }
 
@@ -798,7 +846,7 @@ void IcePort::OnApplicationPacketReceived(const std::shared_ptr<ov::Socket> &rem
 	if (ice_session->GetObserver() != nullptr)
 	{
 		// Some webrtc peer does not send STUN Binding Request repeatedly. So, I determine the peer is alive by receiving application data.
-		ice_session->Refresh();
+		ice_session->Refresh(address_pair);
 		ice_session->GetObserver()->OnDataReceived(*this, ice_session->GetSessionID(), data, ice_session->GetUserData());
 	}
 }
@@ -1009,6 +1057,7 @@ bool IcePort::OnReceivedStunBindingRequest(const std::shared_ptr<ov::Socket> &re
 	// travels in the SDP through the signalling channel, so anyone who knows it could otherwise
 	// hold the session open - and postpone the consent timeout - with unauthenticated requests
 	// sent from any address.
+	// The candidate pair for this address is created just below, so it is refreshed there.
 	ice_session->Refresh();
 
 	// Add the candidate to the session
@@ -1194,7 +1243,9 @@ bool IcePort::OnReceivedStunBindingResponse(const std::shared_ptr<ov::Socket> &r
 		return false;
 	}
 
-	// Only an authenticated response refreshes the session (RFC 7675 5.1)
+	// Only an authenticated response refreshes the session (RFC 7675 5.1).
+	// The path itself is refreshed by OnReceivedStunBindingResponse() just below, which is what
+	// the consent checks actually look at.
 	ice_session->Refresh();
 
 	logtd("Client %s sent STUN binding response", address_pair.ToString().CStr());

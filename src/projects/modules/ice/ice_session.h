@@ -31,15 +31,18 @@ public:
 				std::any user_data, const std::shared_ptr<IcePortObserver> &observer);
 
 	
+	// Session-level liveness only (postpones the passive expiry)
 	void Refresh();
+	// Same, and additionally stamps the path the traffic actually came in on. Consent freshness
+	// is decided per path, so the caller must always report which one it received from.
+	void Refresh(const ov::SocketAddressPair& address_pair);
     bool IsExpired() const;
 
-	// Consent freshness (RFC 7675 style) on the connected path.
-	// Refresh() stamps the last-received time; these helpers expose elapsed times so the
-	// IcePort timer can probe an idle connected path and tear down a dead one.
-	int64_t GetElapsedMsSinceLastReceived() const;
-	int64_t GetElapsedMsSinceLastConsentRequest() const;
-	void MarkConsentRequestSent();
+	// Returns a candidate pair, other than the nominated one, that was validated and has
+	// received traffic within max_idle_ms - i.e. a path that is usable right now. Used to
+	// migrate away from a nominated path that lost consent instead of dropping the session.
+	// The freshest one wins. Returns nullptr when there is no such path.
+	std::shared_ptr<IceCandidatePair> FindFreshAlternatePair(int64_t max_idle_ms) const;
 
 	// State management
 	void SetState(IceConnectionState state);
@@ -121,21 +124,17 @@ private:
     // Candidate pairs
 	mutable std::shared_mutex _connected_candidate_pair_mutex;
     std::shared_ptr<IceCandidatePair> _connected_candidate_pair;
-	// Last time the connected candidate pair was (re)nominated. Used for anti-flap
-	// throttling of path migration. Guarded by _connected_candidate_pair_mutex.
-	std::chrono::time_point<std::chrono::system_clock> _last_connected_pair_changed_time;
+	// Last time the connected candidate pair was (re)nominated, in steady-clock milliseconds.
+	// Used for anti-flap throttling of path migration. Guarded by _connected_candidate_pair_mutex.
+	int64_t _last_connected_pair_changed_ms = 0;
 
 	mutable std::shared_mutex _candidate_pairs_mutex;
     std::map<ov::SocketAddressPair, std::shared_ptr<IceCandidatePair>> _candidate_pairs;
 
-	std::chrono::time_point<std::chrono::system_clock> _expire_time;
+	// Atomic: written from the ICE receive threads, read from the timer thread (IsExpired)
+	std::atomic<int64_t> _expire_at_ms { 0 };
 	const int _expire_after_ms;
 	const uint64_t _lifetime_epoch_ms;
-
-	// Consent freshness timestamps (epoch ms). Atomic: written from the ICE receive thread,
-	// read from the timer thread (CheckTimedOut).
-	std::atomic<int64_t> _last_received_ms { 0 };
-	std::atomic<int64_t> _last_consent_request_ms { 0 };
 
     // interfaces
     std::any _user_data;

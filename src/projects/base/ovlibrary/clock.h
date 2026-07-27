@@ -16,6 +16,16 @@ namespace ov
 			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 		}
 
+		// Monotonic counterpart of NowMSec(), for measuring elapsed times.
+		// Unlike the wall clock it is immune to NTP steps and VM resume, which would otherwise
+		// shift every elapsed-time comparison at once - a backward step makes timeouts look
+		// unreachable, a forward step makes them all fire simultaneously.
+		// The absolute value is meaningless: only differences are.
+		static int64_t NowSteadyMSec()
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
 		// yy:mm:dd HH:MM:SS.ms
 		static ov::String Now()
 		{
