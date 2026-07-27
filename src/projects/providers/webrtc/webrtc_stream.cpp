@@ -464,20 +464,17 @@ namespace pvd
 
 		int64_t adjusted_timestamp = 0;
 		bool timestamp_is_adjusted = AdjustRtpTimestamp(first_rtp_packet->Ssrc(), first_rtp_packet->Timestamp(), std::numeric_limits<uint32_t>::max(), adjusted_timestamp);
-		/*
-		* Ignore this to push stream more quickly
-		* From web, receiving the pushed stream takes 2/3 seconds less
 		if (timestamp_is_adjusted == false)
 		{
-			logtd("not yet received sr packet : %u", first_rtp_packet->Ssrc());
-			// Prevents the stream from being deleted because there is no input data
-			// MonitorInstance->IncreaseBytesIn(*Stream::GetSharedPtr(), bitstream->GetLength());
+			// This no longer costs the 2/3 seconds of startup it used to: AdjustRtpTimestamp()
+			// does not wait for an RTCP SR anymore, it computes the PTS from the RTP delta until
+			// the SR arrives. So a failure here is a real error (unknown SSRC, no timestamp
+			// method) and the frame must be dropped - publishing it would push PTS/DTS 0 in the
+			// middle of the timeline and corrupt everything downstream.
+			logtw("Could not adjust the RTP timestamp, drop the frame : ssrc(%u)", first_rtp_packet->Ssrc());
 			return;
 		}
-		*/
 
-    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-		// printf("AdjustRtpTimestamp - webrtc : %d %u %d %ld %u  %ld\n", bitstream_format, first_rtp_packet->Ssrc(), timestamp_is_adjusted, adjusted_timestamp, first_rtp_packet->Timestamp(), now);
 		auto pts = adjusted_timestamp;
 		auto dts = pts;
 		if (cts_enabled == true)
