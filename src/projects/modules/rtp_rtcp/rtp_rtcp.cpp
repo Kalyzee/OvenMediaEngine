@@ -407,8 +407,18 @@ bool RtpRtcp::OnRtpReceived(NodeType from_node, const std::shared_ptr<const ov::
 			break;
 	}
 
+	// Padding-only packet (libwebrtc pacer bitrate padding / probing): must be acked
+	// in receive statistics and transport-cc feedback (otherwise the sender counts it
+	// as lost and lowers its bandwidth estimation), but must never reach the jitter
+	// buffers - its payload is empty and its timestamp duplicates the previous frame.
+	const bool padding_only_packet = (packet->PayloadSize() == 0);
+
 	bool buffered_packet = false;
-	if (jitter_buffer_type == 1)
+	if (padding_only_packet)
+	{
+		// bypass the jitter buffers
+	}
+	else if (jitter_buffer_type == 1)
 	{
 		auto buffer_it = _rtp_frame_jitter_buffers.find(track_id);
 		if (buffer_it == _rtp_frame_jitter_buffers.end())
@@ -466,7 +476,7 @@ bool RtpRtcp::OnRtpReceived(NodeType from_node, const std::shared_ptr<const ov::
 	}
 
 	// we simulate that the packet is lost if packet is NOT buffered
-	if (buffered_packet)
+	if (buffered_packet || padding_only_packet)
 		receive_statistic->AddReceivedRtpPacket(packet);
 
 	// Send ReceiverReport
@@ -497,7 +507,7 @@ bool RtpRtcp::OnRtpReceived(NodeType from_node, const std::shared_ptr<const ov::
 		}
 
 		// we simulate that the packet is lost if packet is NOT buffered
-		if (buffered_packet)
+		if (buffered_packet || padding_only_packet)
 			transport_cc_generator->AddReceivedRtpPacket(packet);
 
 		// Stop current Transport-wide CC feedback
