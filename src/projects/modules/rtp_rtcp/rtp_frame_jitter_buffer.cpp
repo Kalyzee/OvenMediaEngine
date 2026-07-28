@@ -177,7 +177,11 @@ bool RtpFrame::CheckCompleted()
 	}
 	else
 	{
-		logte("Invalid frame: timestamp(%u) %u/%u", _timestamp, _packets.size(), need_number_of_packets);
+		// Not an error, and not even unusual: this runs on every IsCompleted() call - so on
+		// every received packet - for as long as a marked frame is still missing packets, which
+		// is exactly the state the buffer exists to wait through. At error level a single lost
+		// packet produced dozens of lines per packet received.
+		logtd("Frame not complete yet: timestamp(%u) %u/%u", _timestamp, _packets.size(), need_number_of_packets);
 	}
 
 	return _completed;
@@ -224,7 +228,6 @@ bool RtpFrameJitterBuffer::InsertPacket(const std::shared_ptr<RtpPacket>& packet
 		// First packet received of frame (not sure is really the first packet) 
 		frame = std::make_shared<RtpFrame>(packet->Timestamp());
 		frame->SetMaxBufferingTime(_default_max_buffering_time_ms);
-		_first_frame = false;
 		_rtp_frames[extended_timestamp] = frame;
 	}
 	else

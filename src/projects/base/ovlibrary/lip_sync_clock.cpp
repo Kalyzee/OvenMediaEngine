@@ -43,7 +43,6 @@ std::optional<int64_t> LipSyncClock::CalcPTS(uint32_t id, uint32_t rtp_timestamp
 	if (clock->_first_pts)
 	{
 		clock->_first_pts = false;
-		clock->_first_packet_time = std::chrono::system_clock::now();
 		clock->_extended_rtp_timestamp = rtp_timestamp;
 		clock->_first_extended_rtp_timestamp = clock->_extended_rtp_timestamp;
 

@@ -49,7 +49,6 @@ private:
 		int64_t		_pts = 0;	// converted NTP timestamp to timebase timestamp
 		bool _first_pts = true;
 		bool _first_sr = true;
-		std::chrono::system_clock::time_point _first_packet_time;
 		bool _ready = false;
 		int64_t _adjust_pts = 0;
 		int64_t _offset_pts = 0;		 // offset with the first clock, as currently applied

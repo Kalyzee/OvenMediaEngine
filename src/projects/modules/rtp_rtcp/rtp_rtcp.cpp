@@ -281,7 +281,19 @@ bool RtpRtcp::SetContentMediaType(uint32_t ssrc, ov::String content)
 	auto ssrc_info = GetOrCreateSsrcInfo(ssrc);
 	ssrc_info->content = content;
 
-	if (content != "slides")
+	// RFC 4796 allows a comma separated list, e.g. "a=content:slides,main", and whitespace can
+	// survive the SDP parsing. An exact comparison against "slides" missed both cases.
+	bool is_slides = false;
+	for (const auto &token : content.Split(","))
+	{
+		if (token.Trim() == "slides")
+		{
+			is_slides = true;
+			break;
+		}
+	}
+
+	if (is_slides == false)
 	{
 		return true;
 	}
@@ -691,7 +703,7 @@ std::shared_ptr<RtcpPacket> RtpRtcp::GetLastSentRtcpPacket()
 	return _last_sent_rtcp_packet;
 }
 
-RtpRtcp::RtpRtcpSscr* RtpRtcp::GetSsrcInfo(uint32_t ssrc)
+RtpRtcp::RtpRtcpSsrcInfo* RtpRtcp::GetSsrcInfo(uint32_t ssrc)
 {
 	std::shared_lock<std::shared_mutex> lock(_ssrc_map_lock);
 
@@ -704,7 +716,7 @@ RtpRtcp::RtpRtcpSscr* RtpRtcp::GetSsrcInfo(uint32_t ssrc)
 	return &(it->second);
 }
 
-RtpRtcp::RtpRtcpSscr* RtpRtcp::GetOrCreateSsrcInfo(uint32_t ssrc)
+RtpRtcp::RtpRtcpSsrcInfo* RtpRtcp::GetOrCreateSsrcInfo(uint32_t ssrc)
 {
 	std::lock_guard<std::shared_mutex> lock(_ssrc_map_lock);
 

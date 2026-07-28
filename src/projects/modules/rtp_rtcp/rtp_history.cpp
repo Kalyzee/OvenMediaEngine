@@ -24,7 +24,6 @@ bool RtpHistory::StoreRtpPacket(const std::shared_ptr<RtpPacket> &packet)
 			_last_key_frame_first_sequence_number = sequence_number;
 			_last_key_frame_timestamp = timestamp;
 		}
-		_last_key_frame_last_sequence_number = sequence_number;
 	}
 	else if (_key_frame_stored && _last_key_frame_timestamp == timestamp)
 	{
@@ -118,12 +117,6 @@ uint8_t RtpHistory::GetRtxPayloadType()
 uint16_t RtpHistory::GetIndex(uint16_t seq_no)
 {
 	return seq_no % _max_history_size;
-}
-
-uint16_t RtpHistory::GetLastSequenceNumber() const
-{
-	std::shared_lock<std::shared_mutex> guard(_history_lock);
-	return _last_sequence_number;
 }
 
 bool RtpHistory::GetCatchUpRange(uint16_t &start_seq_no, uint16_t &end_seq_no) const

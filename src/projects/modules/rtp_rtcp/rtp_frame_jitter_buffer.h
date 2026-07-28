@@ -88,7 +88,6 @@ private:
 	uint64_t _last_extended_timestamp = 0;
 	uint32_t _default_max_buffering_time_ms = DEFAULT_VIDEO_MAX_BUFFERING_TIME_MS;
 
-	bool _first_frame = true;
 
 	// timestamp : RtpFrameInfo
 	// it should be ordered, so use std::map

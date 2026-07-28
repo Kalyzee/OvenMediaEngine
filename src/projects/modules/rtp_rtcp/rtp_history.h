@@ -22,7 +22,6 @@ public:
 	uint8_t	GetOriginPayloadType();
 	uint32_t GetRtxSsrc();
 	uint8_t GetRtxPayloadType();
-	uint16_t GetLastSequenceNumber() const;
 	// Range to resend so a late viewer can decode immediately: from the first packet of
 	// the last stored keyframe up to the last stored packet (the whole tail of the GOP).
 	// Returns false if no keyframe is stored or if it has been overwritten in the history.
@@ -59,6 +58,5 @@ private:
 	uint16_t	_last_sequence_number = 0;
 	bool		_key_frame_stored = false;
 	uint16_t	_last_key_frame_first_sequence_number = 0;
-	uint16_t	_last_key_frame_last_sequence_number = 0;
 	uint32_t	_last_key_frame_timestamp = 0;
 };

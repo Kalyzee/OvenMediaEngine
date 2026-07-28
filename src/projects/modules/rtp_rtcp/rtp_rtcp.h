@@ -52,7 +52,7 @@ public:
 	bool OnDataReceivedFromNextNode(NodeType from_node, const std::shared_ptr<const ov::Data>& data) override;
 
 private:
-	struct RtpRtcpSscr 
+	struct RtpRtcpSsrcInfo 
 	{
 		uint32_t ssrc = 0;
 		bool transport_cc_feedback_enabled = false;
@@ -65,10 +65,10 @@ private:
 	bool OnRtcpReceived(NodeType from_node, const std::shared_ptr<const ov::Data>& data);
 
 	// Lookup only, returns nullptr when the SSRC has never been registered.
-	RtpRtcpSscr* GetSsrcInfo(uint32_t ssrc);
+	RtpRtcpSsrcInfo* GetSsrcInfo(uint32_t ssrc);
 	// Inserts a new entry when the SSRC is unknown. Only for the paths that legitimately
 	// discover an SSRC (local sender registration, first received RTP packet, SDP negotiation).
-	RtpRtcpSscr* GetOrCreateSsrcInfo(uint32_t ssrc);
+	RtpRtcpSsrcInfo* GetOrCreateSsrcInfo(uint32_t ssrc);
 
 	std::shared_mutex _state_lock;
 	std::shared_ptr<RtpRtcpInterface> _observer;
@@ -77,13 +77,13 @@ private:
 	ov::StopWatch _rtcp_send_stop_watch;
 	uint64_t _rtcp_sent_count = 0;
 
-	// Guards the structure of _ssrc_map. The RtpRtcpSscr* returned by GetSsrcInfo() /
+	// Guards the structure of _ssrc_map. The RtpRtcpSsrcInfo* returned by GetSsrcInfo() /
 	// GetOrCreateSsrcInfo() stays usable after the lock is released because std::unordered_map
 	// is node-based: rehashing invalidates iterators but never references to elements, and
 	// entries are only ever removed in the destructor.
 	// Lock ordering: always _state_lock (if held) then _ssrc_map_lock, never the opposite.
 	std::shared_mutex _ssrc_map_lock;
-	std::unordered_map<uint32_t, RtpRtcpSscr> _ssrc_map;
+	std::unordered_map<uint32_t, RtpRtcpSsrcInfo> _ssrc_map;
 
 	// Transport-cc feedback
 	std::shared_ptr<RtcpTransportCcFeedbackGenerator> _transport_cc_generator = nullptr;
