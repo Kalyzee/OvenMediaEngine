@@ -14,7 +14,7 @@
 // Minimum delay between two path migrations (re-nominations while already Connected).
 // This prevents flapping between candidate pairs, e.g. when the peer aggressively
 // nominates several pairs in a short time during the initial connection.
-static constexpr uint64_t ICE_PATH_MIGRATION_MIN_INTERVAL_MS = 1000;
+static constexpr int64_t ICE_PATH_MIGRATION_MIN_INTERVAL_MS = 1000;
 
 IceSession::IceSession(session_id_t session_id, IceSession::Role role, 
 				const std::shared_ptr<const SessionDescription> &local_sdp, const std::shared_ptr<const SessionDescription> &peer_sdp,
@@ -43,36 +43,59 @@ ov::String IceSession::ToString() const
 
 void IceSession::Refresh()
 {
-	_expire_time = std::chrono::system_clock::now() + std::chrono::milliseconds(_expire_after_ms);
-	// Any valid inbound activity (media, STUN request/response) is proof the path is alive.
-	_last_received_ms = static_cast<int64_t>(ov::Clock::NowMSec());
+	// Session-level liveness: any inbound activity, on any path, postpones the passive expiry.
+	// This deliberately says nothing about consent, which is decided per path.
+	_expire_at_ms = ov::Clock::NowSteadyMSec() + _expire_after_ms;
 }
 
-int64_t IceSession::GetElapsedMsSinceLastReceived() const
+void IceSession::Refresh(const ov::SocketAddressPair& address_pair)
 {
-	auto last = _last_received_ms.load();
-	if (last == 0)
+	Refresh();
+
+	// Consent freshness belongs to the path the traffic arrived on. Stamping the session
+	// instead would let a peer probing an alternate path vouch for the nominated one, so a
+	// dead nominated path would never time out - the exact Wi-Fi/4G handover case.
+	auto candidate_pair = FindCandidatePair(address_pair);
+	if (candidate_pair != nullptr)
 	{
-		// No activity recorded yet.
-		return 0;
+		candidate_pair->Refresh();
 	}
-	return static_cast<int64_t>(ov::Clock::NowMSec()) - last;
 }
 
-int64_t IceSession::GetElapsedMsSinceLastConsentRequest() const
+std::shared_ptr<IceCandidatePair> IceSession::FindFreshAlternatePair(int64_t max_idle_ms) const
 {
-	auto last = _last_consent_request_ms.load();
-	if (last == 0)
+	// Released before _candidate_pairs_mutex is taken, so the two are never held together
+	auto connected_candidate_pair = GetConnectedCandidatePair();
+
+	std::shared_lock<std::shared_mutex> lock(_candidate_pairs_mutex);
+
+	std::shared_ptr<IceCandidatePair> best;
+	int64_t best_idle_ms = max_idle_ms;
+
+	for (const auto& item : _candidate_pairs)
 	{
-		// Never sent a consent request yet : allow one immediately.
-		return std::numeric_limits<int64_t>::max();
-	}
-	return static_cast<int64_t>(ov::Clock::NowMSec()) - last;
-}
+		const auto& candidate_pair = item.second;
+		if (candidate_pair == nullptr || candidate_pair == connected_candidate_pair)
+		{
+			continue;
+		}
 
-void IceSession::MarkConsentRequestSent()
-{
-	_last_consent_request_ms = static_cast<int64_t>(ov::Clock::NowMSec());
+		// IsConnectable() is sticky: it proves the path was validated at some point, not that
+		// it works now. The idle time is what tells us it is usable today, so both are required.
+		if (candidate_pair->IsConnectable() == false)
+		{
+			continue;
+		}
+
+		auto idle_ms = candidate_pair->GetElapsedMsSinceLastReceived();
+		if (idle_ms <= best_idle_ms)
+		{
+			best_idle_ms = idle_ms;
+			best = candidate_pair;
+		}
+	}
+
+	return best;
 }
 
 bool IceSession::IsExpired() const
@@ -82,7 +105,7 @@ bool IceSession::IsExpired() const
 		return true;
 	}
 
-	return (std::chrono::system_clock::now() > _expire_time);
+	return ov::Clock::NowSteadyMSec() > _expire_at_ms.load();
 }
 
 void IceSession::SetState(IceConnectionState state)
@@ -358,10 +381,10 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair, std::sh
 		// Anti-flap : do not migrate too often. This also avoids bouncing between
 		// candidate pairs during the initial connection, when the peer may nominate
 		// several pairs in a very short time.
-		auto elapsed_ms = ov::Clock::GetElapsedMiliSecondsFromNow(_last_connected_pair_changed_time);
+		auto elapsed_ms = ov::Clock::NowSteadyMSec() - _last_connected_pair_changed_ms;
 		if (elapsed_ms < ICE_PATH_MIGRATION_MIN_INTERVAL_MS)
 		{
-			logtd("ICE session : %u | Skip path migration to %s (only %llu ms since last candidate pair change)",
+			logtd("ICE session : %u | Skip path migration to %s (only %" PRId64 " ms since last candidate pair change)",
 				  GetSessionID(), address_pair.ToString().CStr(), elapsed_ms);
 			return false;
 		}
@@ -376,7 +399,7 @@ bool IceSession::UseCandidate(const ov::SocketAddressPair& address_pair, std::sh
 	// candidate state
 	candidate_pair->SetState(IceConnectionState::Connected);
 	_connected_candidate_pair = candidate_pair;
-	_last_connected_pair_changed_time = std::chrono::system_clock::now();
+	_last_connected_pair_changed_ms = ov::Clock::NowSteadyMSec();
 
 	// Global state
 	SetState(IceConnectionState::Connected);
