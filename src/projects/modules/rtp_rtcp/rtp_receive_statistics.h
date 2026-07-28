@@ -49,6 +49,8 @@ private:
 	uint16_t	_highest_seq = 0;
 	uint32_t	_cycles = 0;
 	uint32_t	_init_seq = 0;
+	// RFC 3550 A.1 : candidate restart point, set to an impossible value until a large jump is seen
+	uint32_t	_bad_seq = RTP_SEQ_MOD + 1;
 	uint32_t	_received_packets = 0;
 	uint32_t	_expected_packets_prior = 0;
 	uint32_t	_received_packets_prior = 0;

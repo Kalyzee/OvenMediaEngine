@@ -1,5 +1,7 @@
 #include "rtp_receive_statistics.h"
 
+#define OV_LOG_TAG "RtpRtcp"
+
 RtpReceiveStatistics::RtpReceiveStatistics(uint32_t media_ssrc, uint32_t clock_rate, uint32_t receiver_ssrc)
 {
 	_media_ssrc = media_ssrc;
@@ -21,9 +23,11 @@ bool RtpReceiveStatistics::AddReceivedRtpPacket(const std::shared_ptr<RtpPacket>
 		_media_ssrc = packet->Ssrc();
 		InitSeq(packet->SequenceNumber());
 	}
-	else
+	else if (UpdateSeq(packet->SequenceNumber()) == false)
 	{
-		UpdateSeq(packet->SequenceNumber());
+		// RFC 3550 A.1 : an unconfirmed large jump is not part of the current numbering, so
+		// counting it would skew the loss fraction reported to the sender
+		return false;
 	}
 
 	UpdateStat(packet);
@@ -70,30 +74,52 @@ void RtpReceiveStatistics::InitSeq(uint16_t seq)
 	_received_packets = 0;
 	_received_packets_prior = 0;
 	_expected_packets_prior = 0;
+	// Impossible 16 bits value, so the first large jump can never look like a confirmation
+	_bad_seq = RTP_SEQ_MOD + 1;
 }
 
+// Follows RFC 3550 A.1. The extended highest sequence number this maintains is what the receiver
+// report carries, so getting it wrong misreports loss for the whole session.
 bool RtpReceiveStatistics::UpdateSeq(uint16_t seq)
 {
-	// Wrapped
-	if (seq < _highest_seq)
+	// Modular distance, so this stays correct across the 16 bits rollover
+	uint16_t udelta = seq - _highest_seq;
+
+	if (udelta < MAX_DROPOUT)
 	{
-		auto roll_over = _highest_seq - seq > RTP_SEQ_MOD / 2;
-		if (roll_over)
+		// In order, with a permissible gap
+		if (seq < _highest_seq)
 		{
+			// The sequence number wrapped. Counted once, and only here: incrementing it on a
+			// late pre-rollover packet as well would inflate the extended sequence number by a
+			// whole cycle and make the report block nonsense.
 			_cycles += RTP_SEQ_MOD;
-			_highest_seq = seq;
 		}
+
+		_highest_seq = seq;
 	}
-	else 
+	else if (udelta <= RTP_SEQ_MOD - MAX_MISORDER)
 	{
-		auto roll_over_already_done = seq - _highest_seq > RTP_SEQ_MOD / 2;
-		if (!roll_over_already_done)
+		// The sequence number made a very large jump: either a sender that restarted with the
+		// same SSRC, or garbage. Without this branch _highest_seq froze until the sequence number
+		// came all the way back around, and every report block in between was wrong.
+		if (seq == _bad_seq)
 		{
-			_highest_seq = seq;
+			// Two sequential packets confirm it, so resynchronise on the new numbering
+			logtw("RTP sequence number jumped to %u, resynchronizing", seq);
+			InitSeq(seq);
+		}
+		else
+		{
+			// Wait for confirmation before trusting it, and do not count this packet
+			_bad_seq = (seq + 1) & (RTP_SEQ_MOD - 1);
+			return false;
 		}
 	}
-	
-	//logi("DEBUG", "RTP: UpdateSeq - extended seq(%u) cycles(%u), highest_seq(%u)", _cycles + _highest_seq, _cycles, _highest_seq);
+	else
+	{
+		// Duplicate or reordered packet : it must not move _highest_seq backwards
+	}
 
 	return true;
 }
