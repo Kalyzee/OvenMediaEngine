@@ -64,25 +64,45 @@ std::shared_ptr<ov::Data> NACK::GetData() const
 
 	std::vector<uint16_t> lost = _lost_ids;
 	std::sort(lost.begin(), lost.end());
+	// Duplicates must go: two equal entries give a difference of 0, and the shift below would
+	// then be (uint16_t)-1 - a shift of 65535 bits, which is undefined behaviour.
+	lost.erase(std::unique(lost.begin(), lost.end()), lost.end());
 
 	std::vector<std::pair<uint16_t, uint16_t>> nack_blocks;
 
 	size_t i = 0;
-	while (i < lost.size())
+	while (i < lost.size() && nack_blocks.size() < NACK_MAX_FCI_BLOCKS)
 	{
 		uint16_t pid = lost[i];
 		uint16_t blp = 0;
 
+		// BLP covers pid+1 .. pid+16, so only differences of 1 to 16 fit in this block.
+		// The subtraction is done in 16 bits on purpose: the numeric sort above splits a range
+		// that straddles the sequence number rollover into two groups, and modular arithmetic
+		// keeps each group correct. That costs one extra FCI block, never correctness.
 		size_t j = i + 1;
-		while (j < lost.size() && lost[j] - pid <= 16)
+		while (j < lost.size())
 		{
-			uint16_t shift = lost[j] - pid - 1;
-			blp |= (1 << shift);
+			uint16_t diff = lost[j] - pid;
+			if (diff < 1 || diff > 16)
+			{
+				break;
+			}
+
+			blp |= static_cast<uint16_t>(1u << (diff - 1));
 			j++;
 		}
 
 		nack_blocks.emplace_back(pid, blp);
 		i = j;
+	}
+
+	if (i < lost.size())
+	{
+		// Never silently truncate: an oversized NACK would exceed the MTU and be dropped whole,
+		// so report what was left out instead of pretending everything was requested.
+		logtw("NACK truncated to %zu FCI blocks : %zu of %zu lost sequence numbers were not requested",
+			  nack_blocks.size(), lost.size() - i, lost.size());
 	}
 
 	const size_t fci_size = nack_blocks.size() * 4;

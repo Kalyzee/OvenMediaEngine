@@ -28,6 +28,11 @@
 //   |            PID                |             BLP               |
 //   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
+// Each FCI block is 4 bytes and covers up to 17 sequence numbers (PID + 16 BLP bits).
+// 128 blocks is about 530 bytes of FCI, comfortably inside a single RTCP packet, and covers
+// more losses than a NACK should ever carry.
+#define NACK_MAX_FCI_BLOCKS 128
+
 class NACK : public RtcpInfo
 {
 public:
@@ -68,7 +73,9 @@ public:
 	}
 	uint16_t GetLostId(size_t index)
 	{
-		if(index > GetLostIdCount() - 1)
+		// Not "index > count - 1" : on an empty list that underflows to SIZE_MAX and lets the
+		// out-of-range access through
+		if (index >= GetLostIdCount())
 		{
 			return 0;
 		}
