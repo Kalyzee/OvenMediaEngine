@@ -9,7 +9,14 @@
 
 #include "transcoder_stream_internal.h"
 
+#include <cmath>
+
 #include "transcoder_private.h"
+
+// Two aspect ratios closer than this are the same orientation for thumbnail purposes.
+// Loose enough to absorb the rounding applied to the computed dimensions, tight enough to
+// still catch a real change such as landscape to portrait.
+#define THUMBNAIL_ASPECT_RATIO_TOLERANCE 0.01f
 
 TranscoderStreamInternal::TranscoderStreamInternal()
 {
@@ -668,19 +675,25 @@ void TranscoderStreamInternal::UpdateOutputTrackTranscode(const std::shared_ptr<
 
 		if (output_track->GetCodecId() == cmn::MediaCodecId::Jpeg || output_track->GetCodecId() == cmn::MediaCodecId::Png)
 		{
-			float output_aspect_ratio = 0;
-			if (output_track->GetHeight() != 0)
-			{
-				output_aspect_ratio = (float)output_track->GetWidth() / (float)output_track->GetHeight();
-			}
-
-			if (output_aspect_ratio != 0 && output_aspect_ratio != aspect_ratio)
+			// The trigger is a change of the *input* aspect ratio since the output resolution was
+			// last computed - that is what makes the thumbnail geometry stale.
+			//
+			// Comparing the output ratio against the input ratio instead was a false positive
+			// generator that destroyed and rebuilt a working encoder on every call: when the
+			// config pins both width and height (e.g. 320x240 on a 16:9 input) the two ratios
+			// never match no matter how stable the input is, and even with a single pinned
+			// dimension the "even" and "multiple of 4" rounding below shifts the result enough to
+			// break an exact float comparison.
+			auto previous_aspect_ratio = output_track->GetSourceAspectRatio();
+			if (previous_aspect_ratio != 0 && std::fabs(previous_aspect_ratio - aspect_ratio) > THUMBNAIL_ASPECT_RATIO_TOLERANCE)
 			{
 				// Reset resolution conf
 				output_track->SetWidth(output_track->GetWidthByConfig());
 				output_track->SetHeight(output_track->GetHeightByConfig());
 				output_track->SetRecreateEncoderFlag(true);
 			}
+
+			output_track->SetSourceAspectRatio(aspect_ratio);
 		}
 
 		// Keep the original video resolution

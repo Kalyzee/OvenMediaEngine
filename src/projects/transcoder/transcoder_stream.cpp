@@ -858,6 +858,12 @@ int32_t TranscoderStream::CreateEncoders(MediaFrame *buffer)
 		for (auto &[output_stream, output_track_id] : output_tracks)
 		{
 			auto output_track = output_stream->GetTrack(output_track_id);
+			if (output_track == nullptr)
+			{
+				logte("[%s/%s(%u)] Could not find output track. OutputTrack(%d)", _application_info.GetVHostAppName().CStr(), _input_stream->GetName().CStr(), _input_stream->GetId(), output_track_id);
+				continue;
+			}
+
 			if (output_track->GetRecreateEncoderFlag())
 			{
 				output_track->SetRecreateEncoderFlag(false);

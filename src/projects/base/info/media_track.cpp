@@ -253,9 +253,19 @@ bool MediaTrack::GetRecreateEncoderFlag() const
 	return _recreate_encoder;
 }
 
-void MediaTrack::SetRecreateEncoderFlag(bool recreate) 
+void MediaTrack::SetRecreateEncoderFlag(bool recreate)
 {
 	_recreate_encoder = recreate;
+}
+
+float MediaTrack::GetSourceAspectRatio() const
+{
+	return _source_aspect_ratio;
+}
+
+void MediaTrack::SetSourceAspectRatio(float aspect_ratio)
+{
+	_source_aspect_ratio = aspect_ratio;
 }
 
 ov::String MediaTrack::GetCodecsParameter() const

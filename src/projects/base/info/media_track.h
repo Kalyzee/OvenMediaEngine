@@ -129,6 +129,11 @@ public:
 	bool GetRecreateEncoderFlag() const;
 	void SetRecreateEncoderFlag(bool recreate);
 
+	// Aspect ratio of the input frame the current output resolution was computed from.
+	// 0 means "not computed yet".
+	float GetSourceAspectRatio() const;
+	void SetSourceAspectRatio(float aspect_ratio);
+
 protected: 
 
 	// Track ID
@@ -145,6 +150,7 @@ protected:
 
 	// Encoder
 	bool _recreate_encoder = false;
+	float _source_aspect_ratio = 0;
 
 	// Variant Name : Original encoder profile that made this track 
 	// from <OutputProfile><Encodes>(<Video> || <Audio> || <Image>)<Name>
