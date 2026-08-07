@@ -380,7 +380,6 @@ bool RtcSignallingServer::SetupWebSocketHandler(std::shared_ptr<http::svr::ws::I
 				return false;
 			}
 
-			ov::String correlation_id = object.GetStringValue("correlation_id");
 			auto &payload = object.GetJsonValue();
 
 			if ((payload.isObject() == false) || (payload.isMember("command") == false))
@@ -388,6 +387,11 @@ bool RtcSignallingServer::SetupWebSocketHandler(std::shared_ptr<http::svr::ws::I
 				logtw("Invalid request message from %s", ws_session->ToString().CStr());
 				return false;
 			}
+
+			// Read after the isObject() guard above: a member lookup on a non-object JSON value
+			// (a bare array/string/number root parses fine, since the reader does not enforce a
+			// strict root) throws Json::LogicError, which is uncaught here and aborts the process.
+			ov::String correlation_id = object.GetStringValue("correlation_id");
 
 			auto &command_value = payload["command"];
 
