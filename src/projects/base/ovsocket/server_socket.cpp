@@ -10,6 +10,8 @@
 
 #include <netinet/tcp.h>
 
+#include <cstdlib>
+
 #include "client_socket.h"
 #include "socket_pool/socket_pool.h"
 #include "socket_pool/socket_pool_worker.h"
@@ -260,7 +262,17 @@ namespace ov
 				// SRTO_PEERLATENCY	1.3.0	pre	        int32_t	    msec	    0	        positive only
 				//
 				// The latency value (as described in SRTO_RCVLATENCY) that is set by the sender side as a minimum value for the receiver.
-				result &= SetSockOpt<int32_t>(SRTO_PEERLATENCY, 50);
+				//
+				// The receiver-side latency doubles as the retransmission window: a wider value lets SRT recover
+				// packets lost during a sub-second link blip so the source stream (and any multiplex fed by it) is
+				// never torn down. Kept configurable so only the hosts that need it opt in — the historical 50ms
+				// default is preserved when OME_SRT_LATENCY_MS is unset, leaving latency-sensitive ingest untouched.
+				static const int32_t srt_latency_ms = []() -> int32_t {
+					const char *value = std::getenv("OME_SRT_LATENCY_MS");
+					const int32_t parsed = (value != nullptr) ? std::atoi(value) : 0;
+					return (parsed > 0) ? parsed : 50;
+				}();
+				result &= SetSockOpt<int32_t>(SRTO_PEERLATENCY, srt_latency_ms);
 
 				// OptName          Since	Binding	    Type	    Units	    Default	    Range
 				// SRTO_RCVLATENCY	1.3.0	pre	        int32_t	    msec	    0	        positive only
@@ -271,7 +283,8 @@ namespace ov
 				// unexpectedly extended RTT time, and the time needed to retransmit the lost UDP packet.
 				// The effective latency value will be the maximum of this options' value and the value of SRTO_PEERLATENCY set by the peer side.
 				// This option in pre-1.3.0 version is available only as SRTO_LATENCY.
-				result &= SetSockOpt<int32_t>(SRTO_RCVLATENCY, 50);
+				// Mirrors SRTO_PEERLATENCY above (OME_SRT_LATENCY_MS, default 50).
+				result &= SetSockOpt<int32_t>(SRTO_RCVLATENCY, srt_latency_ms);
 
 				// OptName	        Since	Binding	    Type	    Units	    Default	    Range
 				// SRTO_RCVSYN		        pre	        bool    	true	    true	    false
