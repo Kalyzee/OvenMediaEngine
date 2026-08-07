@@ -14,6 +14,15 @@
 
 namespace pvd
 {
+    // --- ABR robustness / worker-loop tuning ---------------------------------------------------
+    // Bounded drain per source per loop turn (keeps one bursty source from starving the others).
+    static constexpr int kMultiplexMaxDrainPerSource = 128;
+    // Idle backoff so an idle/degraded channel does not busy-spin a core (mirrors upstream 6fb29554).
+    static constexpr int kMultiplexIdleSleepMinMs = 1;
+    static constexpr int kMultiplexIdleSleepMaxMs = 10;
+    // How often to re-attempt mirroring a dropped source (fast rejoin, well under the 1s budget).
+    static constexpr int kMultiplexRemirrorIntervalMs = 250;
+
     // Implementation of MultiplexStream
     std::shared_ptr<MultiplexStream> MultiplexStream::Create(const std::shared_ptr<Application> &application, const info::Stream &stream_info, const std::shared_ptr<MultiplexProfile> &multiplex_profile)
     {
@@ -43,18 +52,26 @@ namespace pvd
 
     bool MultiplexStream::Stop()
     {
-        ReleaseSourceStreams();
-
-        if (_worker_thread_running == false)
+        // Stop and JOIN the worker BEFORE releasing taps. The Playing loop now re-Mirrors dropped
+        // sources in place, so releasing first would let the still-running worker re-register a
+        // just-released tap in the router (leaking it until the destructor's second release). Before
+        // graceful re-bind the worker never re-mirrored during Playing, so the old order was safe.
+        const bool was_running = _worker_thread_running;
+        if (was_running)
         {
-            return true;
+            _worker_thread_running = false;
+
+            if (_worker_thread.joinable())
+            {
+                _worker_thread.join();
+            }
         }
 
-        _worker_thread_running = false;
+        ReleaseSourceStreams();
 
-        if (_worker_thread.joinable())
+        if (was_running == false)
         {
-            _worker_thread.join();
+            return true;
         }
 
         return Stream::Stop();
@@ -102,6 +119,7 @@ namespace pvd
 
     void MultiplexStream::WorkerThread()
     {
+        // --- Pulling phase: block (all-or-nothing) until every source is tapped, then publish once. ---
         while (_worker_thread_running)
         {
             _mux_state = MuxState::Pulling;
@@ -115,47 +133,100 @@ namespace pvd
             break;
         }
 
+        // The output stream is published with all sources live; track per-source liveness from here on.
+        const auto &source_streams = _multiplex_profile->GetSourceStreams();
+        _source_active.assign(source_streams.size(), true);
+        auto last_remirror = std::chrono::steady_clock::now();
+        int idle_sleep_ms = kMultiplexIdleSleepMinMs;
+
+        // --- Playing phase: graceful degradation. ---
+        // A single source dropping must NOT tear the channel down (the old all-or-nothing Terminate).
+        // We keep the published output stream and its (frozen) tracks, freeze only the dropped
+        // rendition, and re-Mirror that source in place on its EXISTING tap so viewers resume without
+        // a reconnect. Survivors keep flowing throughout.
         while (_worker_thread_running)
         {
             _mux_state = MuxState::Playing;
-            bool break_loop = false;
-            // Get Streams and Push
-            auto source_streams = _multiplex_profile->GetSourceStreams();
-            for (auto &source_stream : source_streams)
+            bool any_packet = false;
+
+            // Pass 1 — always drain SURVIVORS first. Detection of a drop is a cheap tap-state read
+            // (no orchestrator call), so a slow recovery attempt can never delay a healthy rung.
+            for (size_t i = 0; i < source_streams.size(); i++)
             {
+                const auto &source_stream = source_streams[i];
                 auto stream_tap = source_stream->GetStreamTap();
+
                 if (stream_tap == nullptr || stream_tap->GetState() != MediaRouterStreamTap::State::Tapped)
                 {
-                    logte("Multiplex Channel : %s/%s: Stream [%s] is untapped", GetApplicationName(), GetName().CStr(), source_stream->GetUrlStr().CStr());
-                    Terminate();
-                    break_loop = true;
-                    break;
-                }
-
-                auto media_packet = stream_tap->Pop(0);
-                if (media_packet == nullptr)
-                {
+                    // Source dropped. Do NOT Terminate — mark it inactive once; recovery is pass 2.
+                    if (i < _source_active.size() && _source_active[i])
+                    {
+                        _source_active[i] = false;
+                        logtw("Multiplex Channel : %s/%s: source [%s] dropped; serving survivors and re-mirroring in place", GetApplicationName(), GetName().CStr(), source_stream->GetUrlStr().CStr());
+                    }
                     continue;
                 }
 
-                auto source_track_id = MakeSourceTrackIdUnique(stream_tap->GetId(), media_packet->GetTrackId());
-                auto new_track_id = GetNewTrackId(source_track_id);
-                if (new_track_id == 0)
+                for (int drained = 0; drained < kMultiplexMaxDrainPerSource; drained++)
                 {
-                    continue;
+                    auto media_packet = stream_tap->Pop(0);
+                    if (media_packet == nullptr)
+                    {
+                        break;
+                    }
+
+                    auto source_track_id = MakeSourceTrackIdUnique(stream_tap->GetId(), media_packet->GetTrackId());
+                    auto new_track_id = GetNewTrackId(source_track_id);
+                    if (new_track_id == 0)
+                    {
+                        continue;
+                    }
+
+                    media_packet->SetTrackId(new_track_id);
+                    SendFrame(media_packet);
+                    any_packet = true;
                 }
-
-                media_packet->SetTrackId(new_track_id);
-
-                SendFrame(media_packet);
             }
 
-            if (break_loop)
+            // Pass 2 (throttled) — re-mirror inactive sources AFTER survivors are drained, so the
+            // inline orchestrator calls (CheckIfStreamExist / MirrorStream) never stall a live rung.
+            const auto now = std::chrono::steady_clock::now();
+            if ((now - last_remirror) >= std::chrono::milliseconds(kMultiplexRemirrorIntervalMs))
             {
-                break;
+                last_remirror = now;
+                for (size_t i = 0; i < source_streams.size(); i++)
+                {
+                    if (i < _source_active.size() && _source_active[i])
+                    {
+                        continue;
+                    }
+
+                    const auto &source_stream = source_streams[i];
+                    if (RemirrorSourceStream(source_stream))
+                    {
+                        RebindSourceTrackMap(source_stream);
+                        if (i < _source_active.size())
+                        {
+                            _source_active[i] = true;
+                        }
+                        logti("Multiplex Channel : %s/%s: source [%s] re-mirrored; rendition resumed", GetApplicationName(), GetName().CStr(), source_stream->GetUrlStr().CStr());
+                    }
+                }
+            }
+
+            // Idle backoff so an all-idle / degraded channel doesn't peg a core.
+            if (any_packet == false)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(idle_sleep_ms));
+                idle_sleep_ms = (idle_sleep_ms * 2 > kMultiplexIdleSleepMaxMs) ? kMultiplexIdleSleepMaxMs : idle_sleep_ms * 2;
+            }
+            else
+            {
+                idle_sleep_ms = kMultiplexIdleSleepMinMs;
             }
         }
 
+        _mux_state = MuxState::Stopped;
         logti("Multiplex Channel : %s/%s: Worker thread stopped", GetApplicationName(), GetName().CStr());
     }
 
@@ -316,5 +387,120 @@ namespace pvd
         }
 
         return true;
+    }
+
+    bool MultiplexStream::RemirrorSourceStream(const std::shared_ptr<MultiplexProfile::SourceStream> &source_stream)
+    {
+        auto stream_tap = source_stream->GetStreamTap();
+        if (stream_tap == nullptr)
+        {
+            return false;
+        }
+
+        // Defensive only: nothing but this worker ever sets a tap back to Tapped (the router only sets
+        // UnTapped), so this is not reachable via a concurrent re-tap — kept as a cheap guard.
+        if (stream_tap->GetState() == MediaRouterStreamTap::State::Tapped)
+        {
+            return true;
+        }
+
+        auto stream_url = source_stream->GetUrl();
+        if (stream_url == nullptr)
+        {
+            return false;
+        }
+        auto vhost_app_name = info::VHostAppName(stream_url->Host(), stream_url->App());
+
+        // The source republishes asynchronously after a drop; only mirror once it exists again.
+        if (ocst::Orchestrator::GetInstance()->CheckIfStreamExist(vhost_app_name, stream_url->Stream()) == false)
+        {
+            return false;
+        }
+
+        // Discard packets buffered before the drop so we resume cleanly (bounded: an UnTapped tap is no
+        // longer pushed to, so its buffer drains to empty). Avoids a stale-timestamp burst on resume.
+        while (stream_tap->Pop(0) != nullptr)
+        {
+        }
+
+        // Order matters: start the tap and arm past-data replay BEFORE it becomes Tapped, so the router's
+        // first push after re-tap replays the recent GOP (resume on a keyframe). Start() is idempotent;
+        // doing these after MirrorStream would race the first push and could drop the replayed keyframe.
+        stream_tap->Start();
+        stream_tap->SetNeedPastData(true);
+
+        auto result = ocst::Orchestrator::GetInstance()->MirrorStream(stream_tap, vhost_app_name, stream_url->Stream(), MediaRouterInterface::MirrorPosition::Outbound);
+        if (result != CommonErrorCode::SUCCESS)
+        {
+            // Outbound stream may not be registered yet even though the inbound exists — retry next tick.
+            return false;
+        }
+
+        return (stream_tap->GetState() == MediaRouterStreamTap::State::Tapped);
+    }
+
+    void MultiplexStream::RebindSourceTrackMap(const std::shared_ptr<MultiplexProfile::SourceStream> &source_stream)
+    {
+        auto stream_tap = source_stream->GetStreamTap();
+        if (stream_tap == nullptr)
+        {
+            return;
+        }
+
+        auto stream_info = stream_tap->GetStreamInfo();
+        if (stream_info == nullptr)
+        {
+            return;
+        }
+
+        // The output track set is frozen at publish (AddStream). Re-point the routing map onto the
+        // EXISTING output tracks, matched by their stable variant name — never AddTrack here.
+        std::map<ov::String, uint32_t> output_id_by_name;
+        for (const auto &[output_track_id, output_track] : GetTracks())
+        {
+            output_id_by_name.emplace(output_track->GetVariantName(), output_track_id);
+        }
+
+        // Drop this source's previous map entries (they share this tap's id) so a republished source
+        // that reassigned its track ids cannot leave stale keys behind. The tap object is reused across
+        // re-mirror, so its id — the high 32 bits of the key — is stable and identifies exactly this source.
+        const uint64_t tap_prefix = static_cast<uint64_t>(stream_tap->GetId()) << 32;
+        for (auto it = _source_track_id_to_new_id_map.begin(); it != _source_track_id_to_new_id_map.end();)
+        {
+            if ((it->first & 0xFFFFFFFF00000000ULL) == tap_prefix)
+            {
+                it = _source_track_id_to_new_id_map.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+
+        int rebound = 0;
+        for (const auto &[source_track_id, source_track] : stream_info->GetTracks())
+        {
+            MultiplexProfile::NewTrackInfo new_track_info;
+            if (source_stream->GetNewTrackInfo(source_track->GetVariantName(), new_track_info) == false)
+            {
+                // Source track not in this source's TrackMap — not mapped by design (same as cold start).
+                continue;
+            }
+
+            auto it = output_id_by_name.find(new_track_info.new_track_name);
+            if (it == output_id_by_name.end())
+            {
+                // The output track was created at publish; if it is gone the profile changed under us.
+                // Skip rather than mutate the frozen track set — but log it, since this rendition would
+                // otherwise stay black/silent (GetNewTrackId -> 0 -> dropped) with no other trace.
+                logtw("Multiplex Channel : %s/%s: re-bind found no output track [%s] for source [%s] track [%s] — that rendition stays unfed", GetApplicationName(), GetName().CStr(), new_track_info.new_track_name.CStr(), source_stream->GetUrlStr().CStr(), source_track->GetVariantName().CStr());
+                continue;
+            }
+
+            _source_track_id_to_new_id_map[MakeSourceTrackIdUnique(stream_tap->GetId(), source_track_id)] = it->second;
+            rebound++;
+        }
+
+        logti("Multiplex Channel : %s/%s: re-bound %d track(s) for source [%s]", GetApplicationName(), GetName().CStr(), rebound, source_stream->GetUrlStr().CStr());
     }
 }
