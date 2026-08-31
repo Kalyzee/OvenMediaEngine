@@ -34,6 +34,12 @@ public:
 	void SetExtmapAllowMixed(bool allow);
 	bool GetExtmapAllowMixed() const;
 
+	// a=x-rtp-timestamp-mode:{single_delta|with_rtcp_sr}
+	// Client hint: how PTS should be computed from its RTP timestamps
+	// (ex: encoded frame forwarding, where the browser RTCP SRs don't describe the injected timeline)
+	void SetRtpTimestampMode(const ov::String &mode);
+	ov::String GetRtpTimestampMode() const;
+
 	// a=fingerprint:sha-256 D7:81:CF:01:46:FB:2D
 	void SetFingerprint(const ov::String& algorithm, const ov::String& value);
 	virtual ov::String GetFingerprintAlgorithm() const;
@@ -76,6 +82,9 @@ private:
 
 	// extmap-allow-mixed
 	bool _extmap_allow_mixed = false;
+
+	// a=x-rtp-timestamp-mode:
+	ov::String _rtp_timestamp_mode;
 
 	// For RTSP
 	// a=control:

@@ -83,6 +83,16 @@ bool CommonAttr::ParsingCommonAttrLine(char type, std::string content)
 	{
 		_extmap_allow_mixed = true;
 	}
+	// a=x-rtp-timestamp-mode:{single_delta|with_rtcp_sr}
+	else if (content.compare(0, OV_COUNTOF("x-rtp-timestamp-mode") - 1, "x-rtp-timestamp-mode") == 0)
+	{
+		auto colon_pos = content.find(':');
+		if (colon_pos == std::string::npos)
+		{
+			return false;
+		}
+		_rtp_timestamp_mode = content.substr(colon_pos + 1).c_str();
+	}
 	// a=fingerprint:sha-256 D7:81:CF:01:46:FB:2D
 	else if (content.compare(0, OV_COUNTOF("fi") - 1, "fi") == 0)
 	{
@@ -348,4 +358,14 @@ std::vector<std::shared_ptr<IceCandidate>> CommonAttr::GetIceCandidates() const
 void CommonAttr::AddIceCandidate(std::shared_ptr<IceCandidate> ice_candidate)
 {
 	_ice_candidates.push_back(ice_candidate);
+}
+
+void CommonAttr::SetRtpTimestampMode(const ov::String &mode)
+{
+	_rtp_timestamp_mode = mode;
+}
+
+ov::String CommonAttr::GetRtpTimestampMode() const
+{
+	return _rtp_timestamp_mode;
 }

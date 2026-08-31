@@ -104,6 +104,21 @@ namespace pvd
 		void RegisterRtpClock(uint32_t track_id, double clock_rate);
 		void UpdateSenderReportTimestamp(uint32_t track_id, uint32_t msw, uint32_t lsw, uint32_t timestamp);
 		bool AdjustRtpTimestamp(uint32_t track_id, int64_t timestamp, int64_t max_timestamp, int64_t &adjusted_timestamp);
+
+		// Special timestamp calculation for RTP
+		enum class RtpTimestampCalculationMethod : uint8_t
+		{
+			UNDER_DECISION,
+			SINGLE_DELTA,
+			WITH_RTCP_SR
+		};
+
+		// Force the method instead of letting AdjustRtpTimestamp() decide
+		// (ex: from the a=x-rtp-timestamp-mode SDP hint sent by the client)
+		void ForceRtpTimestampCalculationMethod(RtpTimestampCalculationMethod method)
+		{
+			_rtp_timestamp_method = method;
+		}
 		
 	private:
 		void ResetSourceStreamTimestamp();
@@ -129,18 +144,13 @@ namespace pvd
 		std::shared_ptr<ov::Url> _requested_url = nullptr;
 		std::shared_ptr<ov::Url> _final_url = nullptr;
 
-		// Special timestamp calculation for RTP
-		enum class RtpTimestampCalculationMethod : uint8_t
-		{
-			UNDER_DECISION,
-			SINGLE_DELTA,
-			WITH_RTCP_SR
-		};
-
 		RtpTimestampCalculationMethod _rtp_timestamp_method = RtpTimestampCalculationMethod::UNDER_DECISION;
 
 		LipSyncClock 						_rtp_lip_sync_clock;
 		ov::StopWatch						_first_rtp_received_time;
+		// Started at the first packet of the first track: in SINGLE_DELTA mode the other tracks
+		// start their PTS at the arrival delta with the first track (A/V alignment without RTCP SR)
+		ov::StopWatch						_first_track_packet_stopwatch;
 
 		std::shared_ptr<pvd::Application> _application = nullptr;
 	};

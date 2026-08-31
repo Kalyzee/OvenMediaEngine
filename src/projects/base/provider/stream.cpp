@@ -527,6 +527,24 @@ namespace pvd
 			logtd("New track timestamp(%u) : curr(%lld)", track_id, timestamp);
 			_source_timestamp_map[track_id] = timestamp;
 
+			if (_first_track_packet_stopwatch.IsStart() == false)
+			{
+				// First track of the stream: PTS starts at zero, remember when it started
+				_first_track_packet_stopwatch.Start();
+				return 0;
+			}
+
+			// The other tracks start at the arrival delta with the first track: each track
+			// computes its PTS independently here (no RTCP SR), so without this offset every
+			// track would start at 0 whatever its real relative start time (A/V desynchronisation)
+			if (_rtp_timestamp_method == RtpTimestampCalculationMethod::SINGLE_DELTA && track != nullptr)
+			{
+				int64_t arrival_delta_ms = _first_track_packet_stopwatch.Elapsed();
+				int64_t start_offset = static_cast<int64_t>((static_cast<double>(arrival_delta_ms) / 1000.0) * track->GetTimeBase().GetTimescale());
+				logti("New track(%u) starts with a PTS offset of %lld ms (arrival delta with the first track)", track_id, static_cast<long long>(arrival_delta_ms));
+				return start_offset;
+			}
+
 			// Start with zero
 			return 0;
 		}

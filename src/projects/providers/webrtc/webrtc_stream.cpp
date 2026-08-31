@@ -96,6 +96,41 @@ namespace pvd
 			return false;
 		}
 
+		// a=x-rtp-timestamp-mode:{single_delta|with_rtcp_sr} - the client chooses how PTS are
+		// computed from its RTP timestamps. Ex: encoded frame forwarding, where the browser
+		// RTCP SRs don't describe the injected timeline -> single_delta.
+		// The attribute can be at the session level or in any media section (clients usually
+		// append it at the end of the SDP, which lands in the last media section).
+		{
+			ov::String rtp_timestamp_mode = _remote_sdp->GetRtpTimestampMode();
+			for (const auto &media_desc : remote_media_desc_list)
+			{
+				if (rtp_timestamp_mode.IsEmpty() == false)
+				{
+					break;
+				}
+				rtp_timestamp_mode = media_desc->GetRtpTimestampMode();
+			}
+
+			if (rtp_timestamp_mode.IsEmpty() == false)
+			{
+				if (rtp_timestamp_mode == "single_delta")
+				{
+					logti("RTP timestamp calculation forced to SINGLE_DELTA (a=x-rtp-timestamp-mode)");
+					ForceRtpTimestampCalculationMethod(RtpTimestampCalculationMethod::SINGLE_DELTA);
+				}
+				else if (rtp_timestamp_mode == "with_rtcp_sr")
+				{
+					logti("RTP timestamp calculation forced to WITH_RTCP_SR (a=x-rtp-timestamp-mode)");
+					ForceRtpTimestampCalculationMethod(RtpTimestampCalculationMethod::WITH_RTCP_SR);
+				}
+				else
+				{
+					logtw("Unknown a=x-rtp-timestamp-mode value: %s (expected single_delta or with_rtcp_sr)", rtp_timestamp_mode.CStr());
+				}
+			}
+		}
+
 		// Create Nodes
 		_rtp_rtcp = std::make_shared<RtpRtcp>(RtpRtcpInterface::GetSharedPtr());
 		_srtp_transport = std::make_shared<SrtpTransport>();
