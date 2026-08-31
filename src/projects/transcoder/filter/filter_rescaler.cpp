@@ -156,7 +156,20 @@ bool FilterRescaler::InitializeFilterDescription()
 			}
 		}
 		// Scaler description of defulat module
-		desc += ov::String::FormatString("scale=%dx%d:flags=bilinear", _output_track->GetWidth(), _output_track->GetHeight());
+		//
+		// The output resolution is fixed for the whole life of the stream (players cannot follow a
+		// resolution change: the LLHLS init segment and the WebRTC SDP are negotiated once), but the
+		// input resolution can change at any time - a WebRTC sender adapting to CPU or bandwidth does
+		// it routinely. Scaling straight to the output resolution would then either distort the
+		// picture or, when the new input geometry is far from the one the output was computed for,
+		// hand swscale a filter it cannot initialize, which kills the graph for good.
+		//
+		// So fit the picture inside the output resolution keeping its aspect ratio, and pad the rest:
+		// whatever the input becomes, the scaler emits exactly WxH.
+		desc += ov::String::FormatString(
+			"scale=%d:%d:flags=bilinear:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=%d:%d:-1:-1",
+			_output_track->GetWidth(), _output_track->GetHeight(),
+			_output_track->GetWidth(), _output_track->GetHeight());
 	}
 	else if (output_module_id == cmn::MediaCodecModuleId::NVENC)
 	{
