@@ -9,6 +9,9 @@ using namespace cmn;
 
 #define PTS_INCREMENT_LIMIT 15
 
+// Minimum delay between two attempts to (re)build a filter graph that failed.
+#define FILTER_RETRY_INTERVAL_MS 1000
+
 TranscodeFilter::TranscodeFilter()
 	: _internal(nullptr)
 {
@@ -38,6 +41,8 @@ bool TranscodeFilter::Configure(int32_t id,
 bool TranscodeFilter::Create()
 {
 	std::lock_guard<std::shared_mutex> lock(_mutex);
+
+	_last_create_attempt_at = std::chrono::steady_clock::now();
 
 	// If there is a previously created filter, remove it.
 	if (_internal != nullptr)
@@ -73,6 +78,13 @@ bool TranscodeFilter::Create()
 	if (success == false)
 	{
 		logte("Could not create filter");
+
+		// Drop the half-initialized filter instead of keeping it around. Its worker thread was
+		// never started, so it would silently swallow every frame from now on, and IsNeedUpdate()
+		// would never rebuild it because the input resolution already matches the one that failed.
+		// Releasing it is what makes the next frame retry the whole setup.
+		_internal.reset();
+		_internal = nullptr;
 
 		return false;
 	}
@@ -133,10 +145,13 @@ bool TranscodeFilter::IsNeedUpdate(std::shared_ptr<MediaFrame> buffer)
 
 	// Check #2 - Resolution change
 	std::shared_lock<std::shared_mutex> lock(_mutex);
-	
+
 	if (_internal == nullptr)
 	{
-		return false;
+		// A previous Create() failed. Retry, but not on every single frame: a filter graph that
+		// cannot be built for this input/output pair would otherwise flood the log and burn CPU
+		// at the input framerate.
+		return HasRetryDelayElapsed();
 	}
 
 	if (_input_track->GetMediaType() == MediaType::Video)
@@ -151,17 +166,31 @@ bool TranscodeFilter::IsNeedUpdate(std::shared_ptr<MediaFrame> buffer)
 		}
 	}
 
-	// When using an XMA scaler, resource allocation failures may occur intermittently.
-	// Avoid problems in this way until the underlying problem is resolved.
-	if (_internal->GetState() == FilterBase::State::ERROR &&
-		_input_track->GetCodecModuleId() == cmn::MediaCodecModuleId::XMA &&
-		_output_track->GetCodecModuleId() == cmn::MediaCodecModuleId::XMA)
+	// A filter that went into ERROR never recovers on its own, and nothing else in the pipeline
+	// rebuilds it: the frames keep being queued into a graph that no longer produces anything, so
+	// the output track stays dead for the rest of the stream. This was originally limited to the
+	// XMA scaler (intermittent resource allocation failures), but the same dead end is reachable
+	// with the software scaler - typically when a filter graph rebuild triggered by an input
+	// resolution change fails - so recreate on ERROR whatever the codec module is.
+	if (_internal->GetState() == FilterBase::State::ERROR)
 	{
-		logtw("It is assumed that the XMA resource allocation failed. So, recreate the filter.");
+		if (HasRetryDelayElapsed() == false)
+		{
+			return false;
+		}
+
+		logtw("The filter is in an error state. So, recreate the filter.");
 		return true;
 	}
 
 	return false;
+}
+
+bool TranscodeFilter::HasRetryDelayElapsed() const
+{
+	auto elapsed = std::chrono::steady_clock::now() - _last_create_attempt_at;
+
+	return std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() >= FILTER_RETRY_INTERVAL_MS;
 }
 
 void TranscodeFilter::SetCompleteHandler(CompleteHandler complete_handler)

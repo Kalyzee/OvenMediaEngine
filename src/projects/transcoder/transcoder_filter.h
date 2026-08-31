@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 
+#include <chrono>
+
 #include "base/info/stream.h"
 #include "filter/filter_base.h"
 #include "transcoder_context.h"
@@ -46,8 +48,13 @@ public:
 private:
 	bool Create();
 	bool IsNeedUpdate(std::shared_ptr<MediaFrame> buffer);
+	bool HasRetryDelayElapsed() const;
 
 	int32_t _id;
+
+	// Timestamp of the last Create() attempt, used to throttle the retries of a filter graph
+	// that keeps failing to build.
+	std::chrono::steady_clock::time_point _last_create_attempt_at = std::chrono::steady_clock::now();
 
 	int64_t _last_timestamp = -1LL;
 	int64_t _timestamp_jump_threshold = 0LL;
