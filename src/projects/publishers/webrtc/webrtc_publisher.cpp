@@ -466,6 +466,14 @@ bool WebRtcPublisher::OnAddRemoteDescription(const std::shared_ptr<http::svr::ws
 		return false;
 	}
 
+	// The stream may have been recreated between the offer and this answer (e.g. the publisher reconnected),
+	// and the new one may not be started yet. Apply the same rule as when the offer is requested.
+	if (stream->WaitUntilStart(0) == false)
+	{
+		logtw("(%s/%s) stream has created but not started.", final_vhost_app_name.CStr(), final_stream_name.CStr());
+		return false;
+	}
+
 	auto ice_session_id = _ice_port->IssueUniqueSessionId();
 	auto session = RtcSession::Create(Publisher::GetSharedPtrAs<WebRtcPublisher>(), application, stream, final_file_name, offer_sdp, answer_sdp, _ice_port, ice_session_id, ws_session, ws_session_info_id);
 	if (session != nullptr)

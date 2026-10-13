@@ -286,6 +286,15 @@ std::shared_ptr<const RtcMasterPlaylist> RtcStream::GetRtcMasterPlaylist(const o
 {
 	if (file_name.IsEmpty())
 	{
+		// _default_playlist_name is only set in Start(). If it is still empty (stream not started yet,
+		// or default playlist disabled), recursing with it would never terminate and overflow the stack.
+		if (_default_playlist_name.IsEmpty())
+		{
+			logtw("RtcStream(%s/%s) - There is no default playlist (stream not started or default playlist disabled)",
+				  GetApplication()->GetVHostAppName().CStr(), GetName().CStr());
+			return nullptr;
+		}
+
 		return GetRtcMasterPlaylist(_default_playlist_name);
 	}
 
