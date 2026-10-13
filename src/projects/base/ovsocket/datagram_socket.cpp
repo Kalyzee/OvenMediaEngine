@@ -52,7 +52,7 @@ namespace ov
 
 	bool DatagramSocket::CloseInternal(SocketState close_reason)
 	{
-		_callback = nullptr;
+		StoreCallback(nullptr);
 
 		if (Socket::CloseInternal(close_reason))
 		{

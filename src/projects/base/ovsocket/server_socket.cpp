@@ -154,7 +154,7 @@ namespace ov
 			client.second->Close();
 		}
 
-		_callback = nullptr;
+		StoreCallback(nullptr);
 
 		if (Socket::CloseInternal(close_reason))
 		{

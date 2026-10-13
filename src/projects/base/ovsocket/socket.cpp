@@ -316,13 +316,13 @@ namespace ov
 		if (_blocking_mode == BlockingMode::Blocking)
 		{
 			// Socket is already blocking mode
-			OV_ASSERT2(_callback == nullptr);
+			OV_ASSERT2(LoadCallback() == nullptr);
 
 			return true;
 		}
 
 		// Prevent to call the callback while change blocking mode
-		auto old_callback = std::move(_callback);
+		auto old_callback = ExchangeCallback(nullptr);
 
 		if (
 			SetBlockingInternal(BlockingMode::Blocking) &&
@@ -333,7 +333,7 @@ namespace ov
 		}
 
 		// Rollback
-		_callback = std::move(old_callback);
+		StoreCallback(std::move(old_callback));
 
 		return false;
 	}
@@ -355,14 +355,12 @@ namespace ov
 		if (_blocking_mode == BlockingMode::NonBlocking)
 		{
 			// Socket is already non-blocking mode
-			_callback = std::move(callback);
+			StoreCallback(std::move(callback));
 
 			return true;
 		}
 
-		auto old_callback = std::move(_callback);
-
-		_callback = std::move(callback);
+		auto old_callback = ExchangeCallback(std::move(callback));
 		_blocking_mode = BlockingMode::NonBlocking;
 
 		if (
@@ -373,7 +371,7 @@ namespace ov
 		}
 
 		// Rollback
-		_callback = std::move(old_callback);
+		StoreCallback(std::move(old_callback));
 		_blocking_mode = BlockingMode::Blocking;
 
 		return false;
@@ -580,7 +578,7 @@ namespace ov
 						}
 
 						connect_helper = std::make_shared<ConnectHelper>();
-						_callback = connect_helper;
+						StoreCallback(connect_helper);
 					}
 				}
 
@@ -593,7 +591,7 @@ namespace ov
 				{
 					if (_blocking_mode == BlockingMode::Blocking)
 					{
-						_callback = nullptr;
+						StoreCallback(nullptr);
 
 						if (use_timeout)
 						{
@@ -798,15 +796,19 @@ namespace ov
 		{
 			SetState(SocketState::Connected);
 
-			if (_callback != nullptr)
+			// Another thread may reset _callback concurrently (e.g. Connect() timed out and
+			// closed the socket), so check and call the same local copy
+			auto callback = LoadCallback();
+
+			if (callback != nullptr)
 			{
 				_connection_event_fired = true;
-				_callback->OnConnected(error);
+				callback->OnConnected(error);
 			}
 		}
 		else
 		{
-			auto callback = std::move(_callback);
+			auto callback = ExchangeCallback(nullptr);
 
 			CloseWithState(SocketState::Error);
 
@@ -1039,9 +1041,11 @@ namespace ov
 	{
 		logad("Socket is ready to read");
 
-		if (_callback != nullptr)
+		auto callback = LoadCallback();
+
+		if (callback != nullptr)
 		{
-			_callback->OnReadable();
+			callback->OnReadable();
 		}
 	}
 
@@ -2077,7 +2081,7 @@ namespace ov
 	{
 		CHECK_STATE(!= SocketState::Closed, false);
 
-		_post_callback = std::move(_callback);
+		_post_callback = ExchangeCallback(nullptr);
 		_close_reason = close_reason;
 
 		if (_socket.IsValid())

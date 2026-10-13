@@ -166,7 +166,7 @@ namespace ov
 		SocketType GetType() const;
 		std::shared_ptr<SocketAsyncInterface> GetAsyncInterface()
 		{
-			return _callback;
+			return LoadCallback();
 		}
 
 		// only available for SRT socket
@@ -526,7 +526,25 @@ namespace ov
 		bool _has_close_command = false;
 
 		std::atomic<bool> _connection_event_fired{false};
+		// Read by the SocketPoolWorker thread (connect/readable events) while other threads
+		// may replace or reset it (Connect() with timeout, Close()). Always access it through
+		// LoadCallback()/StoreCallback()/ExchangeCallback() and keep a local copy before calling it.
 		std::shared_ptr<SocketAsyncInterface> _callback;
+
+		std::shared_ptr<SocketAsyncInterface> LoadCallback() const
+		{
+			return std::atomic_load(&_callback);
+		}
+
+		void StoreCallback(std::shared_ptr<SocketAsyncInterface> callback)
+		{
+			std::atomic_store(&_callback, std::move(callback));
+		}
+
+		std::shared_ptr<SocketAsyncInterface> ExchangeCallback(std::shared_ptr<SocketAsyncInterface> callback)
+		{
+			return std::atomic_exchange(&_callback, std::move(callback));
+		}
 
 		// A temporary variable used to send callback without mutex lock
 		std::shared_ptr<SocketAsyncInterface> _post_callback;
