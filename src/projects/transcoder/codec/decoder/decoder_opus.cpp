@@ -109,7 +109,7 @@ void DecoderOPUS::CodecThread()
 					_parser,
 					_context,
 					&_pkt->data, &_pkt->size,
-					_cur_data->GetDataAs<uint8_t>() + _pkt_offset,
+					GetPaddedParserInput(_cur_data->GetDataAs<uint8_t>() + _pkt_offset, _cur_data->GetLength() - _pkt_offset),
 					static_cast<int32_t>(_cur_data->GetLength() - _pkt_offset),
 					_cur_pkt->GetPts(), _cur_pkt->GetPts(),
 					0);

@@ -126,7 +126,7 @@ void DecoderVP8::CodecThread()
 		int64_t pts = (buffer->GetPts() == -1LL) ? AV_NOPTS_VALUE : buffer->GetPts();
 		int64_t dts = (buffer->GetDts() == -1LL) ? AV_NOPTS_VALUE : buffer->GetDts();
 		[[maybe_unused]] int64_t duration = (buffer->GetDuration() == -1LL) ? AV_NOPTS_VALUE : buffer->GetDuration();
-		auto data = packet_data->GetDataAs<uint8_t>();
+		auto data = GetPaddedParserInput(packet_data->GetDataAs<uint8_t>(), packet_data->GetLength());
 
 		///////////////////////////////
 		// Send to decoder

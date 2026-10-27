@@ -44,6 +44,18 @@ public:
 	}
 
 protected:
+	// FFmpeg parsers may read past the end of their input (up to AV_INPUT_BUFFER_PADDING_SIZE bytes).
+	// Packet buffers carry no padding, so the input is copied into a zero-padded buffer before parsing.
+	// The returned pointer stays valid until the next call.
+	const uint8_t *GetPaddedParserInput(const uint8_t *data, size_t size)
+	{
+		_parser_input.resize(size + AV_INPUT_BUFFER_PADDING_SIZE);
+		::memcpy(_parser_input.data(), data, size);
+		::memset(_parser_input.data() + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+
+		return _parser_input.data();
+	}
+
 	int32_t _decoder_id;
 	int32_t _gpu_id = -1;
 
@@ -52,6 +64,8 @@ protected:
 	AVCodecContext *_context = nullptr;
 	AVCodecParserContext *_parser = nullptr;
 	AVCodecParameters *_codec_par = nullptr;
+
+	std::vector<uint8_t> _parser_input;
 
 	bool _change_format = false;
 
