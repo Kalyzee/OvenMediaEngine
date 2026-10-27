@@ -42,6 +42,12 @@ bool NalUnitBitstreamParser::ReadUEV(uint32_t &value)
         }
     }
 
+    // ue(v) values fit in 32 bits only up to 31 leading zero bits
+    if (zero_bit_count > 31)
+    {
+        return false;
+    }
+
     if (zero_bit_count > 0)
     {
         uint32_t rest;
@@ -50,7 +56,7 @@ bool NalUnitBitstreamParser::ReadUEV(uint32_t &value)
             return false;
         }
 
-        value = (1 << zero_bit_count) - 1 + rest;
+        value = (1U << zero_bit_count) - 1 + rest;
     }
     else
     {

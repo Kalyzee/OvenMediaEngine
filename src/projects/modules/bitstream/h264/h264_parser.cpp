@@ -584,12 +584,13 @@ bool H264Parser::ParseVUI(NalUnitBitstreamParser &parser, H264SPS &sps)
 				uint32_t num_units_in_tick, time_scale;
 				uint8_t fixed_frame_rate_flag;
 
-				if (!parser.ReadUEV(num_units_in_tick))
+				// num_units_in_tick and time_scale are u(32), not ue(v) (ISO/IEC 14496-10 E.1.1)
+				if (!parser.ReadU32(num_units_in_tick))
 				{
 					return false;
 				}
 
-				if (!parser.ReadUEV(time_scale))
+				if (!parser.ReadU32(time_scale))
 				{
 					return false;
 				}
@@ -599,9 +600,10 @@ bool H264Parser::ParseVUI(NalUnitBitstreamParser &parser, H264SPS &sps)
 					return false;
 				}
 
-				if (fixed_frame_rate_flag)
+				// Both values shall be greater than 0; a malformed SPS must not cause a division by zero
+				if (fixed_frame_rate_flag && num_units_in_tick > 0 && time_scale > 0)
 				{
-					sps._fps = time_scale / (2 * num_units_in_tick);
+					sps._fps = static_cast<unsigned int>(time_scale / (2ULL * num_units_in_tick));
 				}
 			}
 		}

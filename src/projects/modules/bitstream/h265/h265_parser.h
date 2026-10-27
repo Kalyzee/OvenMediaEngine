@@ -121,6 +121,11 @@ public:
 
     float GetFps() const
     {
+        if (_vui_parameters._num_units_in_tick == 0)
+        {
+            return 0;
+        }
+
         return _vui_parameters._time_scale / _vui_parameters._num_units_in_tick;
     }
 
