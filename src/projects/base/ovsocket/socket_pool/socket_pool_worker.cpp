@@ -205,7 +205,13 @@ namespace ov
 		{
 			auto socket = delete_queue.front();
 			delete_queue.pop();
-			_socket_map.erase(socket->GetNativeHandle());
+
+			// Only remove this exact socket: its descriptor may already be reused by a newer one
+			auto item = _socket_map.find(socket->GetNativeHandle());
+			if ((item != _socket_map.end()) && (item->second == socket))
+			{
+				_socket_map.erase(item);
+			}
 		}
 	}
 
@@ -489,6 +495,15 @@ namespace ov
 		auto native_handle = socket->GetNativeHandle();
 		std::shared_ptr<Error> error;
 
+		// The socket must be queued before it is added to epoll: the worker thread can receive
+		// an event for it as soon as it is added, and SRT events are resolved through _socket_map.
+		// Since SRT sockets are edge-triggered, an event that cannot be resolved is lost for good
+		// (e.g. the first SRT_EPOLL_OUT, which dispatches the Connected command of an accepted client).
+		{
+			std::lock_guard lock_guard(_socket_map_mutex);
+			_sockets_to_insert.push(socket);
+		}
+
 		switch (GetType())
 		{
 			case SocketType::Tcp:
@@ -531,13 +546,14 @@ namespace ov
 				break;
 		}
 
-		if (error == nullptr)
+		if (error != nullptr)
 		{
-			std::lock_guard lock_guard(_socket_map_mutex);
-			_sockets_to_insert.push(socket);
-		}
-		else
-		{
+			// Cancel the registration above
+			{
+				std::lock_guard lock_guard(_socket_map_mutex);
+				_sockets_to_delete.push(socket);
+			}
+
 			logae("Could not add to epoll for descriptor %d (error: %s)", native_handle, error->What());
 		}
 
