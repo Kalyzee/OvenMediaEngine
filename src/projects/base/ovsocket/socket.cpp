@@ -44,8 +44,9 @@ namespace ov
 	public:
 		void OnConnected(const std::shared_ptr<const SocketError> &error) override
 		{
-			_epoll_event.SetEvent();
+			// The error must be stored before waking up WaitForConnect(), which reads it right away
 			_error = error;
+			_epoll_event.SetEvent();
 		}
 
 		void OnReadable() override
@@ -290,7 +291,17 @@ namespace ov
 		{
 			if (need_to_wait_first_epoll_event)
 			{
-				return WaitForFirstEpollEvent();
+				if (WaitForFirstEpollEvent())
+				{
+					return true;
+				}
+
+				logae("The first epoll event was not received within %dms, giving up on this socket", OV_SOCKET_FIRST_EPOLL_EVENT_TIMEOUT);
+
+				// Leave the worker in a consistent state, the caller handles the failure
+				DeleteFromWorker();
+
+				return false;
 			}
 
 			return true;
@@ -798,6 +809,20 @@ namespace ov
 
 			// Another thread may reset _callback concurrently (e.g. Connect() timed out and
 			// closed the socket), so check and call the same local copy
+			auto callback = LoadCallback();
+
+			if (callback != nullptr)
+			{
+				_connection_event_fired = true;
+				callback->OnConnected(error);
+			}
+		}
+		else if (_blocking_mode == BlockingMode::Blocking)
+		{
+			// A blocking Connect() is waiting for this event: it still owns the descriptor, removes it from
+			// epoll and closes it itself. Closing it here would release the descriptor number while Connect()
+			// is about to call DeleteFromWorker() with it: if another socket reuses that number in between,
+			// that socket is removed from epoll instead and never receives its first event.
 			auto callback = LoadCallback();
 
 			if (callback != nullptr)

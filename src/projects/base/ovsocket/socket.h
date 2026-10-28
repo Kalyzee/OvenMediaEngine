@@ -31,6 +31,10 @@
 // For example, it can occur when EAGAIN continues to occur for a period of time, or when the peer's TCP window is full and no longer receives data.
 #define OV_SOCKET_EXPIRE_TIMEOUT (10 * 1000)
 
+// The first epoll event is raised as soon as the socket is added to epoll, so it is only missed if the socket was
+// removed from epoll in the meantime. Do not wait for it forever: the calling thread would be stuck.
+#define OV_SOCKET_FIRST_EPOLL_EVENT_TIMEOUT (5 * 1000)
+
 namespace ov
 {
 	// Forward declaration
@@ -481,7 +485,7 @@ namespace ov
 		// false == Timed out
 		bool WaitForFirstEpollEvent()
 		{
-			return _first_epoll_event_received.Wait();
+			return _first_epoll_event_received.Wait(OV_SOCKET_FIRST_EPOLL_EVENT_TIMEOUT);
 		}
 
 		// This API MUST be called in SocketPoolWorker::ThreadProc() thread

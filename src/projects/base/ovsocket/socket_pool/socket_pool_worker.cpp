@@ -872,7 +872,13 @@ namespace ov
 
 		{
 			std::lock_guard lock_guard(_socket_map_mutex);
-			_socket_map.erase(socket->GetNativeHandle());
+
+			// Only remove this exact socket: its descriptor may already be reused by a newer one
+			auto item = _socket_map.find(socket->GetNativeHandle());
+			if ((item != _socket_map.end()) && (item->second == socket))
+			{
+				_socket_map.erase(item);
+			}
 		}
 
 		return (error == nullptr);
